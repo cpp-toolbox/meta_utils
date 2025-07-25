@@ -1,4 +1,6 @@
 #include "meta_utils.hpp"
+#include "meta_types.hpp"
+#include "../glm_utils/glm_utils.hpp"
 
 #include <iostream>
 #include <string>
@@ -65,40 +67,54 @@ std::string generate_invoker(const std::string &signature) {
     }
 
     // Build regex pattern for argument parsing
-    std::vector<std::string> regex_groups;
-    std::vector<std::string> conversions;
-    std::vector<std::string> call_args;
+    std::vector<std::string> argument_literal_regexes;
+    std::vector<std::string> arg_to_var_conversions;
+    std::vector<std::string> call_to_actual_func_args;
+
+    struct TypeConversionData {
+        std::string string_to_type_func;
+        std::string type_to_string_func;
+        std::string literal_regex;
+    };
+
+    std::unordered_map<std::string, std::string> extended_type_to_regex = regex_utils::type_to_regex;
+    extended_type_to_regex["glm::vec3"] = regex_utils::float_triplet;
+
+    std::string to_string_func = "std::to_string";
+    auto get_re = [&](std::string type) { return extended_type_to_regex.at(type); };
+
+    // NOTE: all of these functions take in a string and return the correct type
+    std::unordered_map<std::string, TypeConversionData> type_to_type_conversion_data = {
+        {types::INT, {"std::stoi", to_string_func, get_re(types::INT)}},
+        {types::SHORT, {"std::stoi", to_string_func, get_re(types::SHORT)}},
+        {types::LONG, {"std::stoi", to_string_func, get_re(types::LONG)}},
+        {types::FLOAT, {"std::stod", to_string_func, get_re(types::FLOAT)}},
+        {types::DOUBLE, {"std::stod", to_string_func, get_re(types::DOUBLE)}},
+        {types::STRING, {"", "", ""}},
+        {"glm::vec3", {"glm_utils::parse_vec3", "vec3_to_string", get_re("glm::vec3")}}};
 
     for (size_t i = 0; i < arg_types.size(); i++) {
         const auto &typ = arg_types[i];
         const auto &name = arg_names[i];
         int group_num = (int)i + 1;
 
-        if (typ == "int" || typ == "short" || typ == "long") {
-            regex_groups.push_back("(" + regex_utils::int_regex + ")");
-            conversions.push_back("    " + typ + " " + name + " = std::stoi(match[" + std::to_string(group_num) +
-                                  "]);");
-        } else if (typ == "float" || typ == "double") {
-            regex_groups.push_back("(" + regex_utils::float_regex + ")");
-            conversions.push_back("    " + typ + " " + name + " = std::stod(match[" + std::to_string(group_num) +
-                                  "]);");
-        } else if (typ == "std::string") {
-            regex_groups.push_back(R"(\"([^\"]*)\")");
-            conversions.push_back("    " + typ + " " + name + " = match[" + std::to_string(group_num) + "].str();");
-        } else {
-            regex_groups.push_back("([^,()]+)");
-            conversions.push_back("    // TODO: convert match[" + std::to_string(group_num) + "] to " + typ);
-            conversions.push_back("    " + typ + " " + name + "; // Manual conversion needed");
-        }
+        TypeConversionData type_conversion_data = type_to_type_conversion_data.at(typ);
 
-        call_args.push_back(name);
+        std::string variable_assigment_to_conversion = "    " + typ + " " + name + " = " +
+                                                       type_conversion_data.string_to_type_func + "(match[" +
+                                                       std::to_string(group_num) + "]);";
+
+        arg_to_var_conversions.push_back(variable_assigment_to_conversion);
+        argument_literal_regexes.push_back(regex_utils::capture(type_conversion_data.literal_regex));
+
+        call_to_actual_func_args.push_back(name);
     }
 
-    std::string function_invocation_regex =
-        text_utils::join({regex_utils::start_of_line, func_name, "\\(",
-                          text_utils::join(regex_groups, regex_utils::optional_ws + "," + regex_utils::optional_ws),
-                          "\\)", regex_utils::end_of_line},
-                         regex_utils::optional_ws);
+    std::string function_invocation_regex = text_utils::join(
+        {regex_utils::start_of_line, func_name, "\\(",
+         text_utils::join(argument_literal_regexes, regex_utils::optional_ws + "," + regex_utils::optional_ws), "\\)",
+         regex_utils::end_of_line},
+        regex_utils::optional_ws);
 
     // Compose the final code
     std::ostringstream oss;
@@ -106,18 +122,20 @@ std::string generate_invoker(const std::string &signature) {
     oss << "    std::regex re(R\"(" << function_invocation_regex << ")\");\n";
     oss << "    std::smatch match;\n";
     oss << "    if (!std::regex_match(input, match, re)) return std::nullopt;\n\n";
-    for (const auto &conv : conversions) {
+    for (const auto &conv : arg_to_var_conversions) {
         oss << conv << "\n";
     }
     oss << "\n";
-    oss << "    " << return_type << " result = " << func_name << "(" << text_utils::join(call_args, ", ") << ");\n";
+    oss << "    " << return_type << " result = " << func_name << "(" << text_utils::join(call_to_actual_func_args, ", ")
+        << ");\n";
 
     if (return_type == "void") {
         oss << "    return std::string(); // void returns empty string\n";
     } else if (return_type == "std::string") {
         oss << "    return result;\n";
     } else {
-        oss << "    return std::to_string(result);\n";
+        std::string return_type_to_string_func = type_to_type_conversion_data.at(return_type).type_to_string_func;
+        oss << "    return " << return_type_to_string_func << "(result);\n";
     }
     oss << "}\n";
 
