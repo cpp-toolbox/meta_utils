@@ -1,80 +1,27 @@
 #ifndef META_UTILS_HPP
 #define META_UTILS_HPP
 
+#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
 #include <sstream>
-#include "../regex_utils/regex_utils.hpp"
-#include "../text_utils/text_utils.hpp"
+#include <fstream>
+#include <stdexcept>
+#include <iterator>
+
+#include "sbpt_generated_includes.hpp"
+
+namespace meta_utils {
 
 class MetaVar {
     std::string name;
 };
 
-class MetaFunction {
-  public:
-    std::string name;
-    std::string return_type;
-    std::vector<std::string> params;
-    std::string body;
-
-    // Default constructor
-    MetaFunction() = default;
-
-    // Constructor that parses a function string
-    explicit MetaFunction(const std::string &cpp_func_str) { parse_from_string(cpp_func_str); }
-
-    // Utility: trim whitespace from both ends of a string
-    static std::string trim(const std::string &str) {
-        const auto begin = str.find_first_not_of(" \t\n\r");
-        const auto end = str.find_last_not_of(" \t\n\r");
-        return (begin == std::string::npos || end == std::string::npos) ? "" : str.substr(begin, end - begin + 1);
-    }
-
-    void parse_from_string(const std::string &cpp_func_str) {
-        static const std::regex func_regex(R"(([\w:<>\s&\*\[\]]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})",
-                                           std::regex::ECMAScript);
-
-        std::smatch match;
-        if (!std::regex_search(cpp_func_str, match, func_regex)) {
-            throw std::invalid_argument("Invalid function format.");
-        }
-
-        return_type = trim(match[1]);
-        name = trim(match[2]);
-
-        std::string param_str = trim(match[3]);
-        body = trim(match[4]);
-
-        params.clear();
-        if (!param_str.empty()) {
-            std::stringstream ss(param_str);
-            std::string param;
-            while (std::getline(ss, param, ',')) {
-                params.push_back(trim(param));
-            }
-        }
-    }
-
-    std::string to_lambda_string() const {
-        std::ostringstream oss;
-        oss << "[=](";
-        for (size_t i = 0; i < params.size(); ++i) {
-            oss << params[i];
-            if (i + 1 < params.size()) {
-                oss << ", ";
-            }
-        }
-        oss << ") -> " << return_type << " {\n" << body << "\n}";
-        return oss.str();
-    }
-};
-
 // NOTE: we can't use MetaFunctions in here because we get a cyclic dependency
 class MetaType {
   public:
-    std::string name;
+    std::string base_type_name;
     std::string string_to_type_func;
     std::string type_to_string_func;
     std::string literal_regex;
@@ -85,7 +32,7 @@ class MetaType {
     std::vector<MetaType> element_types;
 
     bool operator==(const MetaType &other) const {
-        return name == other.name && string_to_type_func == other.string_to_type_func &&
+        return base_type_name == other.base_type_name && string_to_type_func == other.string_to_type_func &&
                type_to_string_func == other.type_to_string_func && literal_regex == other.literal_regex &&
                element_types == other.element_types;
     }
@@ -93,17 +40,38 @@ class MetaType {
     MetaType() {}
     MetaType(std::string name, std::string string_to_type_func, std::string type_to_string_func,
              std::string literal_regex, const std::vector<MetaType> &element_types = {})
-        : name(std::move(name)), string_to_type_func(std::move(string_to_type_func)),
+        : base_type_name(std::move(name)), string_to_type_func(std::move(string_to_type_func)),
           type_to_string_func(std::move(type_to_string_func)), literal_regex(std::move(literal_regex)),
           element_types(element_types) {}
 
     std::string to_string() const { return to_string_rec(*this); }
 
+    std::string get_type_name() const { return get_type_name_rec(*this); }
+
   private:
+    std::string get_type_name_rec(const MetaType &meta_type) const {
+        if (meta_type.element_types.empty()) {
+            return meta_type.base_type_name;
+        }
+
+        std::ostringstream oss;
+        oss << meta_type.base_type_name << "<";
+
+        for (size_t i = 0; i < meta_type.element_types.size(); ++i) {
+            if (i > 0) {
+                oss << ", ";
+            }
+            oss << get_type_name_rec(meta_type.element_types[i]);
+        }
+
+        oss << ">";
+        return oss.str();
+    }
+
     std::string to_string_rec(const MetaType &meta_type) const {
         std::ostringstream oss;
         oss << "MetaType {\n";
-        oss << "  name: " << meta_type.name << "\n";
+        oss << "  name: " << meta_type.base_type_name << "\n";
         oss << "  string_to_type_func: " << meta_type.string_to_type_func << "\n";
         oss << "  type_to_string_func: " << meta_type.type_to_string_func << "\n";
         oss << "  literal_regex: " << meta_type.literal_regex << "\n";
@@ -127,8 +95,6 @@ class MetaType {
         return oss.str();
     }
 };
-
-namespace meta_utils {
 
 inline std::string create_to_string_lambda(std::string type) {
     return "[](const " + type + " &v) { return std::to_string(v); }";
@@ -156,7 +122,8 @@ inline MetaType FLOAT = MetaType("float", "[](const std::string &s) { return std
 inline MetaType DOUBLE = MetaType("double", "[](const std::string &s) { return std::stod(s); }",
                                   create_to_string_lambda("double"), regex_utils::float_regex);
 
-inline MetaType STRING = MetaType("std::string", "", "", "");
+inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { return s; }",
+                                  "[](const std::string &s) { return s; }", regex_utils::string_literal);
 
 // GENERICS
 // NOTE: generic types cannot be defined directly as variables, there are "infinitely" many types possible so we can't
@@ -180,7 +147,7 @@ inline std::unordered_map<std::string, std::function<MetaType(MetaType)>> generi
 inline std::unordered_map<std::string, MetaType> create_type_name_to_meta_type_map(std::vector<MetaType> meta_types) {
     std::unordered_map<std::string, MetaType> map;
     for (const auto &meta_type : meta_types) {
-        map.emplace(meta_type.name, meta_type);
+        map.emplace(meta_type.base_type_name, meta_type);
     }
     return map;
 }
@@ -196,6 +163,8 @@ parse_meta_type_from_string(const std::string &type_str,
                             std::unordered_map<std::string, MetaType> concrete_type_name_to_meta_type =
                                 meta_utils::concrete_type_name_to_meta_type);
 
+std::string clean_type_string(const std::string &raw_type);
+
 class MetaParameter {
   public:
     std::string name;
@@ -204,13 +173,47 @@ class MetaParameter {
     MetaParameter(const std::string &input,
                   const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                       meta_utils::concrete_type_name_to_meta_type) {
+
+        // std::cout << "MetaParameter start " << input << std::endl;
+
         std::istringstream iss(input);
-        std::string type_str;
-        if (!(iss >> type_str >> name)) {
+        std::vector<std::string> tokens{std::istream_iterator<std::string>{iss}, std::istream_iterator<std::string>{}};
+
+        if (tokens.size() < 2) {
             throw std::invalid_argument("Invalid MetaParameter input: expected format 'Type Name'");
         }
 
-        type = parse_meta_type_from_string(type_str, concrete_type_name_to_meta_type).value();
+        // std::cout << "1" << std::endl;
+
+        name = tokens.back();
+
+        std::string raw_type_str;
+        for (size_t i = 0; i < tokens.size() - 1; ++i) {
+            if (i > 0)
+                raw_type_str += " ";
+            raw_type_str += tokens[i];
+        }
+
+        // std::cout << "2" << std::endl;
+
+        // std::cout << "raw_type_str: " << raw_type_str << std::endl;
+        std::string cleaned_type_str = clean_type_string(raw_type_str);
+        // std::cout << "cleaned_type_str: " << cleaned_type_str << std::endl;
+
+        // std::cout << "3" << std::endl;
+
+        auto parsed_type = parse_meta_type_from_string(cleaned_type_str, concrete_type_name_to_meta_type);
+        if (!parsed_type.has_value()) {
+            throw std::invalid_argument("Failed to parse MetaType from string: '" + cleaned_type_str + "'");
+        }
+
+        // std::cout << "4" << std::endl;
+
+        type = parsed_type.value();
+
+        // std::cout << "5" << std::endl;
+
+        // std::cout << "MetaParameter end " << input << std::endl;
     }
 
     bool operator==(const MetaParameter &other) const { return name == other.name && type == other.type; }
@@ -233,11 +236,14 @@ class MetaParameter {
     }
 };
 
-std::string generate_regex_to_match_valid_invocation_of_func(const std::string &signature);
+std::string generate_regex_to_match_valid_invocation_of_func(
+    const std::string &signature, const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
+                                      meta_utils::concrete_type_name_to_meta_type);
 
 class MetaFunctionSignature {
   public:
     std::string name;
+    std::string return_type;
     std::vector<MetaParameter> parameters;
     std::string invocation_regex;
 
@@ -249,6 +255,9 @@ class MetaFunctionSignature {
     MetaFunctionSignature(const std::string &input,
                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                               meta_utils::concrete_type_name_to_meta_type) {
+
+        // std::cout << "MetaFunctionSignature start " << input << std::endl;
+        // std::cout << "1" << std::endl;
         static const std::regex signature_regex(R"(^\s*([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*$)");
         std::smatch match;
         if (!std::regex_match(input, match, signature_regex)) {
@@ -256,8 +265,12 @@ class MetaFunctionSignature {
                 "Invalid function signature format: expected 'ReturnType name(Type1 x, Type2 y)'");
         }
 
-        // match[1] = return type (ignored here)
+        // std::cout << "2" << std::endl;
+
+        return_type = match[1];
         name = match[2];
+
+        // std::cout << "3" << std::endl;
 
         std::string param_list = match[3];
         std::vector<std::string> param_tokens = split_comma_separated(param_list);
@@ -269,7 +282,13 @@ class MetaFunctionSignature {
             }
         }
 
-        invocation_regex = generate_regex_to_match_valid_invocation_of_func(input);
+        // std::cout << "4" << std::endl;
+
+        invocation_regex = generate_regex_to_match_valid_invocation_of_func(input, concrete_type_name_to_meta_type);
+
+        // std::cout << "5" << std::endl;
+
+        // std::cout << "MetaFunctionSignature end " << input << std::endl;
     }
 
     std::string to_string() const {
@@ -307,13 +326,243 @@ class MetaFunctionSignature {
     }
 };
 
+class MetaFunction {
+  public:
+    MetaFunctionSignature signature;
+    std::string body;
+
+    MetaFunction(const std::string &func_str,
+                 const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
+                     meta_utils::concrete_type_name_to_meta_type) {
+
+        // std::cout << "MetaFunction start" << std::endl;
+        // std::cout << "1" << std::endl;
+        // std::cout << func_str << std::endl;
+
+        // static const std::regex function_regex(R"(([\w:\<\>\s,&\*]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
+        // static const std::regex function_regex(R"((.+?)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
+        static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
+
+        // std::cout << "2" << std::endl;
+        std::smatch match;
+        if (!std::regex_search(func_str, match, function_regex)) {
+            throw std::invalid_argument("Function string is not a valid function definition");
+        }
+
+        // std::cout << "3" << std::endl;
+
+        std::string header_signature = match[1].str() + " " + match[2].str() + "(" + match[3].str() + ")";
+
+        // std::cout << "4" << std::endl;
+        signature = MetaFunctionSignature(header_signature, concrete_type_name_to_meta_type);
+
+        // std::cout << "5" << std::endl;
+        body = MetaFunction::trim(match[4]);
+
+        // std::cout << "6" << std::endl;
+
+        // std::cout << "MetaFunction end" << std::endl;
+    }
+
+    std::string to_lambda_string() const {
+        std::ostringstream oss;
+        oss << "[=](";
+
+        for (size_t i = 0; i < signature.parameters.size(); ++i) {
+            const auto &param = signature.parameters[i];
+            // Format each parameter as "type name"
+            oss << param.type.get_type_name() << " " << param.name;
+            if (i + 1 < signature.parameters.size()) {
+                oss << ", ";
+            }
+        }
+
+        oss << ") -> " << signature.return_type << " {\n" << body << "\n}";
+        return oss.str();
+    }
+
+  private:
+    static std::string trim(const std::string &s) {
+        const auto begin = s.find_first_not_of(" \t\r\n");
+        const auto end = s.find_last_not_of(" \t\r\n");
+        return (begin == std::string::npos) ? "" : s.substr(begin, end - begin + 1);
+    }
+};
+
+class MetaFunctionCollection {
+  public:
+    std::string name;
+    std::vector<MetaFunction> functions;
+    std::vector<std::string> includes_required_for_declaration;
+    std::vector<std::string> includes_required_for_definition;
+
+    MetaFunctionCollection() {};
+
+    void add_function(MetaFunction mf) { functions.push_back(mf); }
+
+    MetaFunctionCollection(const std::string &header_file_path, const std::string &cpp_file_path,
+                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
+                               meta_utils::concrete_type_name_to_meta_type) {
+        std::string header_source = read_file(header_file_path);
+        std::string cpp_source = read_file(cpp_file_path);
+
+        name = extract_function_collection_name(header_source).value();
+        extract_includes(header_source, includes_required_for_declaration);
+        extract_includes(cpp_source, includes_required_for_definition);
+        extract_functions(cpp_source, concrete_type_name_to_meta_type);
+    }
+
+    std::string generate_header_file_string() {
+        std::ostringstream oss;
+
+        // Assume this->name exists and is a valid string identifier
+        std::string guard_macro = name;
+        std::transform(guard_macro.begin(), guard_macro.end(), guard_macro.begin(), [](unsigned char c) {
+            if (std::isalnum(c))
+                return static_cast<char>(std::toupper(c));
+            else
+                return '_';
+        });
+        guard_macro += "_HPP";
+
+        oss << "#ifndef " << guard_macro << "\n";
+        oss << "#define " << guard_macro << "\n\n";
+
+        for (const auto &include : includes_required_for_declaration) {
+            oss << include << "\n";
+        }
+
+        oss << "\n";
+
+        for (const auto &func : functions) {
+            oss << func.signature.return_type << " " << func.signature.name << "(";
+            for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
+                const auto &param = func.signature.parameters[i];
+                oss << param.type.get_type_name() << " " << param.name;
+                if (i < func.signature.parameters.size() - 1)
+                    oss << ", ";
+            }
+            oss << ");\n";
+        }
+
+        oss << "\n#endif // " << guard_macro << "\n";
+
+        return oss.str();
+    }
+
+    std::string generate_cpp_file_string() {
+        std::ostringstream oss;
+
+        for (const auto &include : includes_required_for_definition) {
+            oss << include << "\n";
+        }
+
+        oss << "\n";
+
+        for (const auto &func : functions) {
+            oss << func.signature.return_type << " " << func.signature.name << "(";
+            for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
+                const auto &param = func.signature.parameters[i];
+                oss << param.type.get_type_name() << " " << param.name;
+                if (i < func.signature.parameters.size() - 1)
+                    oss << ", ";
+            }
+            oss << ") {\n";
+            oss << func.body << "\n";
+            oss << "}\n\n";
+        }
+
+        return oss.str();
+    }
+
+  private:
+    static std::string read_file(const std::string &file_path) {
+        std::ifstream file(file_path);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open file: " + file_path);
+        }
+        std::ostringstream ss;
+        ss << file.rdbuf();
+        return ss.str();
+    }
+
+    static std::optional<std::string> extract_function_collection_name(const std::string &src) {
+        std::regex define_guard_regex(R"(^\s*#ifndef\s+([A-Z0-9_]+))");
+        std::istringstream stream(src);
+        std::string line;
+
+        while (std::getline(stream, line)) {
+            std::smatch match;
+            if (std::regex_search(line, match, define_guard_regex)) {
+                std::string guard_name = match[1];
+
+                // Convert to lowercase
+                std::transform(guard_name.begin(), guard_name.end(), guard_name.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+
+                // Remove trailing "_hpp" if present
+                const std::string suffix = "_hpp";
+                if (guard_name.size() >= suffix.size() &&
+                    guard_name.compare(guard_name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                    guard_name.erase(guard_name.size() - suffix.size());
+                }
+
+                return guard_name;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    static void extract_includes(const std::string &src, std::vector<std::string> &out) {
+        std::regex include_regex(R"(^\s*(#include\s+["<].*[">]))");
+        std::istringstream stream(src);
+        std::string line;
+        while (std::getline(stream, line)) {
+            std::smatch match;
+            if (std::regex_search(line, match, include_regex)) {
+                out.push_back(match[1]);
+            }
+        }
+    }
+
+    void extract_functions(const std::string &cpp_source,
+                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type) {
+        std::regex func_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*?)\})");
+        auto begin = std::sregex_iterator(cpp_source.begin(), cpp_source.end(), func_regex);
+        auto end = std::sregex_iterator();
+
+        for (auto it = begin; it != end; ++it) {
+            // std::cout << "in loop" << std::endl;
+            try {
+                std::string whole_function = it->str();
+                functions.emplace_back(whole_function, concrete_type_name_to_meta_type);
+            } catch (const std::exception &e) {
+                // optionally log and skip
+            }
+        }
+    }
+};
+
 class MetaFunctionInvocation {
   public:
     std::string name;
     std::vector<MetaType> argument_types;
 };
 
-std::string generate_invoker(const std::string &signature, const std::vector<MetaType> available_types);
+inline std::string vector_include = "#include <vector>";
+inline std::string string_include = "#include <string>";
+inline std::string optional_include = "#include <optional>";
+inline std::string regex_include = "#include <regex>";
+
+std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
+                                                 const std::vector<MetaType> &available_types);
+
+std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc);
+
+void generate_string_invokers(const std::string &input_header_path, const std::string &input_source_path,
+                              const std::vector<meta_utils::MetaType> &extended_types,
+                              const std::string &output_name_prefix = "string_invoker_");
 
 }; // namespace meta_utils
 

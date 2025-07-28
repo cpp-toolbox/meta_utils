@@ -1,7 +1,9 @@
 #include "meta_utils.hpp"
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <vector>
+#include <algorithm> // for std::remove_if
 
 namespace meta_utils {
 
@@ -40,22 +42,17 @@ std::vector<float> parse_vector_of_type(const std::string &input) {
 std::string create_string_to_vector_of_type_func(MetaType type_parameter) {
     text_utils::MultilineStringAccumulator msa;
 
-    msa.add("std::vector<", type_parameter.name, "> parse_vector_of_type(const std::string &input) {");
+    msa.add("[=](const std::string &input) -> std::vector<", type_parameter.get_type_name(), "> {");
     msa.add("    std::string trimmed = input;");
-    msa.add("");
-
-    msa.add("    // Remove surrounding curly braces if present");
     msa.add("    if (!trimmed.empty() && trimmed.front() == '{' && trimmed.back() == '}') {");
     msa.add("        trimmed = trimmed.substr(1, trimmed.size() - 2);");
     msa.add("    }");
     msa.add("");
-
-    msa.add("    std::vector<", type_parameter.name, "> result;");
+    msa.add("    std::vector<", type_parameter.get_type_name(), "> result;");
     msa.add("    std::regex element_re(R\"(", type_parameter.literal_regex, ")\");");
     msa.add("    auto begin = std::sregex_iterator(trimmed.begin(), trimmed.end(), element_re);");
     msa.add("    auto end = std::sregex_iterator();");
     msa.add("");
-
     msa.add("    for (auto it = begin; it != end; ++it) {");
     msa.add("        try {");
     msa.add("            auto conversion = ", type_parameter.string_to_type_func, ";");
@@ -64,23 +61,18 @@ std::string create_string_to_vector_of_type_func(MetaType type_parameter) {
     msa.add("            // Ignore malformed elements");
     msa.add("        }");
     msa.add("    }");
-    msa.add("");
-
     msa.add("    return result;");
     msa.add("}");
 
-    MetaFunction mf(msa.str());
-
-    return mf.to_lambda_string();
+    return msa.str();
 }
 
 std::string create_vector_of_type_to_string_func(MetaType type_parameter) {
     text_utils::MultilineStringAccumulator msa;
 
-    msa.add("std::string f(const std::vector<", type_parameter.name, ">& vec) {");
+    msa.add("[=](const std::vector<", type_parameter.get_type_name(), ">& vec) -> std::string {");
     msa.add("    std::ostringstream oss;");
     msa.add("    oss << \"{\";");
-    msa.add("");
     msa.add("    auto conversion = ", type_parameter.type_to_string_func, ";");
     msa.add("");
     msa.add("    for (size_t i = 0; i < vec.size(); ++i) {");
@@ -93,8 +85,7 @@ std::string create_vector_of_type_to_string_func(MetaType type_parameter) {
     msa.add("    return oss.str();");
     msa.add("}");
 
-    MetaFunction mf(msa.str());
-    return mf.to_lambda_string();
+    return msa.str();
 }
 
 // Extracts top-level comma-separated substrings from inside <...>
@@ -156,7 +147,9 @@ std::vector<std::string> split_args(const std::string &args_str) {
     return args;
 }
 
-std::string generate_regex_to_match_valid_invocation_of_func(const std::string &signature) {
+std::string generate_regex_to_match_valid_invocation_of_func(
+    const std::string &signature, const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type) {
+    // std::cout << " generate_regex_to_match_valid_invocation_of_func start " << signature << std::endl;
     // Parse signature: return_type func_name(arg_type arg_name, ...)
     std::smatch match;
     if (!std::regex_match(signature, match, regex_utils::function_signature_re)) {
@@ -174,30 +167,36 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
     for (auto &arg : args) {
         if (arg.empty())
             continue;
-        size_t space_pos = arg.rfind(' ');
-        if (space_pos == std::string::npos) {
-            throw std::invalid_argument("Each argument must have type and name");
+
+        std::istringstream iss(arg);
+        std::vector<std::string> tokens{std::istream_iterator<std::string>{iss}, std::istream_iterator<std::string>{}};
+
+        if (tokens.size() < 2) {
+            throw std::invalid_argument("Each argument must have at least a type and a name");
         }
-        arg_types.push_back(arg.substr(0, space_pos));
+
+        // Extract the name (last token)
+        std::string name = tokens.back();
+
+        // Combine the rest to form the raw type string
+        std::string raw_type_str;
+        for (size_t i = 0; i < tokens.size() - 1; ++i) {
+            if (i > 0)
+                raw_type_str += " ";
+            raw_type_str += tokens[i];
+        }
+
+        // Clean the type (remove const, &, *, etc.)
+        std::string cleaned_type_str = clean_type_string(raw_type_str);
+
+        arg_types.push_back(cleaned_type_str);
     }
 
     // Build regex pattern for argument parsing
     std::vector<std::string> argument_literal_regexes;
 
-    std::vector<MetaType> extended_types = meta_utils::concrete_types;
-    MetaType glm_vec3_type("glm::vec3", "[](const std::string &s) { return glm_utils::parse_vec3(s); }",
-                           "[](const glm::vec3 &v) { return vec3_to_string(v); }", regex_utils::float_triplet);
-
-    MetaType glm_vec2_type("glm::vec2", "[](const std::string &s) { return glm_utils::parse_vec2(s); }",
-                           "[](const glm::vec2 &v) { return vec2_to_string(v); }", regex_utils::float_tuple);
-
-    extended_types.push_back(glm_vec3_type);
-    extended_types.push_back(glm_vec2_type);
-
-    auto extended_type_name_to_meta_type = meta_utils::create_type_name_to_meta_type_map(extended_types);
-
     for (const auto &typ : arg_types) {
-        auto mt = meta_utils::parse_meta_type_from_string(typ, extended_type_name_to_meta_type).value();
+        auto mt = meta_utils::parse_meta_type_from_string(typ, concrete_type_name_to_meta_type).value();
         argument_literal_regexes.push_back(regex_utils::capture(mt.literal_regex));
     }
 
@@ -207,6 +206,8 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
          regex_utils::end_of_line},
         regex_utils::optional_ws);
 
+    // std::cout << " generate_regex_to_match_valid_invocation_of_func end " << signature << std::endl;
+
     return function_invocation_regex;
 }
 
@@ -214,11 +215,19 @@ std::optional<MetaType>
 parse_meta_type_from_string(const std::string &type_str,
                             std::unordered_map<std::string, MetaType> concrete_type_name_to_meta_type) {
 
+    // std::cout << "parse_meta_type_from_string start : " << type_str << std::endl;
+
     std::string s = text_utils::trim(type_str);
+
+    // for (const auto &entry : concrete_type_name_to_meta_type) {
+    //     std::cout << "Key: " << entry.first << ", MetaType name: " << entry.second.to_string() << std::endl;
+    // }
 
     if (auto it = concrete_type_name_to_meta_type.find(s); it != concrete_type_name_to_meta_type.end()) {
         return it->second;
     }
+
+    // std::cout << "1" << std::endl;
 
     // now we know that the type is a generic type
 
@@ -226,22 +235,37 @@ parse_meta_type_from_string(const std::string &type_str,
     static const std::regex template_regex(R"((\w+(?:::\w+)*)\s*<\s*([^<>]+(?:<[^<>]+>[^<>]*)*)\s*>)");
     std::smatch match;
     if (std::regex_match(s, match, template_regex)) {
+
+        // std::cout << "2" << std::endl;
         std::string base_type = match[1].str(); // e.g., "std::vector"
         std::string args_str = match[2].str();  // e.g., "int" or "std::string, std::vector<int>"
 
+        // std::cout << "3" << std::endl;
         // parse argument types recursively
         std::vector<std::string> inner_type_strs = split_template_args(args_str);
         std::vector<MetaType> inner_types;
 
+        // std::cout << "4" << std::endl;
+
         for (const std::string &arg_str : inner_type_strs) {
+
+            // std::cout << "5" << std::endl;
             auto maybe_inner = parse_meta_type_from_string(arg_str, concrete_type_name_to_meta_type);
+
+            // std::cout << "6" << std::endl;
             if (!maybe_inner)
                 return std::nullopt; // fail if any inner type is unknown
             inner_types.push_back(*maybe_inner);
         }
 
+        // std::cout << "7" << std::endl;
+
         // NOTE: only having support for vector right now.
         MetaType mt = meta_utils::generic_type_to_metatype_constructor.at(base_type)(inner_types.at(0));
+
+        // std::cout << "8" << std::endl;
+
+        // std::cout << "parse_meta_type_from_string end : " << type_str << std::endl;
 
         return mt;
     } else {
@@ -251,32 +275,31 @@ parse_meta_type_from_string(const std::string &type_str,
     return std::nullopt;
 }
 
-std::string generate_invoker(const std::string &signature, const std::vector<MetaType> available_types) {
-    // Parse signature: return_type func_name(arg_type arg_name, ...)
-    std::smatch match;
-    if (!std::regex_match(signature, match, regex_utils::function_signature_re)) {
-        throw std::invalid_argument("Invalid function signature");
-    }
+std::string clean_type_string(const std::string &raw_type) {
+    std::string s = raw_type;
 
-    std::string return_type = text_utils::trim(match[1]);
-    std::string func_name = match[2];
-    std::string args_str = match[3];
+    // Remove 'const', 'volatile', '&', '*'
+    static const std::regex modifiers(R"(\bconst\b|\bvolatile\b|&|\*)");
+    s = std::regex_replace(s, modifiers, "");
 
-    auto args = split_args(args_str);
+    // Remove extra whitespace
+    static const std::regex extra_spaces(R"(\s+)");
+    s = std::regex_replace(s, extra_spaces, " ");
 
-    std::vector<std::string> arg_types;
-    std::vector<std::string> arg_names;
+    // Trim leading/trailing space
+    if (!s.empty() && s.front() == ' ')
+        s.erase(s.begin());
+    if (!s.empty() && s.back() == ' ')
+        s.pop_back();
 
-    for (auto &arg : args) {
-        if (arg.empty())
-            continue;
-        size_t space_pos = arg.rfind(' ');
-        if (space_pos == std::string::npos) {
-            throw std::invalid_argument("Each argument must have type and name");
-        }
-        arg_types.push_back(arg.substr(0, space_pos));
-        arg_names.push_back(arg.substr(space_pos + 1));
-    }
+    return s;
+}
+
+std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
+                                                 const std::vector<MetaType> &available_types) {
+    const std::string &return_type = sig.return_type;
+    const std::string &func_name = sig.name;
+    const auto &params = sig.parameters;
 
     std::vector<std::string> lambda_conversions;
     std::vector<std::string> arg_to_var_conversions;
@@ -284,39 +307,37 @@ std::string generate_invoker(const std::string &signature, const std::vector<Met
 
     auto extended_type_name_to_meta_type = meta_utils::create_type_name_to_meta_type_map(available_types);
 
-    for (size_t i = 0; i < arg_types.size(); i++) {
-        const auto &typ = arg_types[i];
-        const auto &name = arg_names[i];
-        int group_num = (int)i + 1;
+    for (size_t i = 0; i < params.size(); i++) {
+        const auto &param = params[i];
+        const std::string &typ = param.type.get_type_name();
+        const std::string &name = param.name;
+        int group_num = static_cast<int>(i + 1);
 
-        auto mt = meta_utils::parse_meta_type_from_string(typ, extended_type_name_to_meta_type).value();
+        const std::string &string_to_type_func = param.type.string_to_type_func;
 
         std::string conversion_func_name = "conversion" + std::to_string(group_num);
-        lambda_conversions.push_back("    auto " + conversion_func_name + " = " + mt.string_to_type_func + ";");
+        lambda_conversions.push_back("    auto " + conversion_func_name + " = " + string_to_type_func + ";");
 
-        std::string variable_assigment_to_conversion =
+        std::string variable_assignment =
             "    " + typ + " " + name + " = " + conversion_func_name + "(match[" + std::to_string(group_num) + "]);";
 
-        arg_to_var_conversions.push_back(variable_assigment_to_conversion);
-
+        arg_to_var_conversions.push_back(variable_assignment);
         call_to_actual_func_args.push_back(name);
     }
 
-    std::string function_invocation_regex = meta_utils::generate_regex_to_match_valid_invocation_of_func(signature);
-    // Compose the final code
+    std::string function_invocation_regex = sig.invocation_regex;
+
     text_utils::MultilineStringAccumulator msa;
 
-    msa.add("std::optional<std::string> f(const std::string &input) {");
+    msa.add("std::optional<std::string> ", func_name, "_string_invoker(const std::string &input) {");
     msa.add("    std::regex re(R\"(", function_invocation_regex, ")\");");
     msa.add("    std::smatch match;");
     msa.add("    if (!std::regex_match(input, match, re)) return std::nullopt;");
     msa.add("");
 
-    for (int i = 0; i < arg_to_var_conversions.size(); ++i) {
-        auto lambda_conversion = lambda_conversions.at(i);
-        auto conversion = arg_to_var_conversions.at(i);
-        msa.add(lambda_conversion);
-        msa.add(conversion);
+    for (size_t i = 0; i < arg_to_var_conversions.size(); ++i) {
+        msa.add(lambda_conversions[i]);
+        msa.add(arg_to_var_conversions[i]);
     }
 
     msa.add("");
@@ -337,8 +358,8 @@ std::string generate_invoker(const std::string &signature, const std::vector<Met
         msa.add("    auto conversion = ", return_type_to_string_func, ";");
         msa.add("    return conversion(result);");
     }
-    msa.add("}");
 
+    msa.add("}");
     return msa.str();
 }
 
@@ -351,6 +372,120 @@ std::string join(const std::vector<std::string> &v, const std::string &sep) {
             res += sep;
     }
     return res;
+}
+
+std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc) {
+    std::ostringstream oss;
+
+    oss << "std::optional<std::string> invoke(const std::string &invocation, std::vector<meta_utils::MetaType> "
+           "available_types) "
+           "{\n\n";
+    oss << "    auto type_name_to_meta_type_map = meta_utils::create_type_name_to_meta_type_map(available_types);\n";
+
+    // Generate MetaFunctionSignature declarations
+    for (const auto &func : mfc.functions) {
+        oss << "    meta_utils::MetaFunctionSignature mfs_" << func.signature.name << "(\""
+            << func.signature.return_type << " " << func.signature.name << "(";
+
+        for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
+            const auto &param = func.signature.parameters[i];
+            oss << param.type.get_type_name() << " " << param.name;
+            if (i < func.signature.parameters.size() - 1)
+                oss << ", ";
+        }
+
+        oss << ")\", type_name_to_meta_type_map);\n";
+    }
+
+    oss << "\n";
+
+    // Generate if-else chain for invocation matching
+    for (const auto &func : mfc.functions) {
+        oss << "    if (std::regex_match(invocation, std::regex(mfs_" << func.signature.name
+            << ".invocation_regex))) {\n";
+        oss << "        return " << func.signature.name << "_string_invoker(invocation);\n";
+        oss << "    }\n";
+    }
+
+    oss << "\n    return \"No matching function signature.\";\n";
+    oss << "}\n";
+
+    return oss.str();
+}
+
+void generate_string_invokers(const std::string &input_header_path, const std::string &input_source_path,
+                              const std::vector<meta_utils::MetaType> &extended_types,
+                              const std::string &output_name_prefix) {
+
+    auto type_name_to_meta_type_map = meta_utils::create_type_name_to_meta_type_map(extended_types);
+
+    meta_utils::MetaFunctionCollection input_collection(input_header_path, input_source_path,
+                                                        type_name_to_meta_type_map);
+
+    meta_utils::MetaFunctionCollection output_collection;
+    output_collection.name = output_name_prefix + input_collection.name;
+    output_collection.includes_required_for_declaration = input_collection.includes_required_for_declaration;
+    output_collection.includes_required_for_declaration.push_back(meta_utils::string_include);
+    output_collection.includes_required_for_declaration.push_back(meta_utils::optional_include);
+    output_collection.includes_required_for_declaration.push_back(
+        "#include \"../../utility/meta_utils/meta_utils.hpp\"");
+
+    output_collection.includes_required_for_definition = {
+        "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
+        "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
+        "#include \"../../utility/glm_utils/glm_utils.hpp\"",
+        "#include \"../../utility/glm_printing/glm_printing.hpp\"", meta_utils::regex_include};
+
+    // add collection-level invoker
+    auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(input_collection);
+    meta_utils::MetaFunction full_invoker(full_invoker_str, type_name_to_meta_type_map);
+    output_collection.add_function(full_invoker);
+
+    // add per-function invokers
+    for (const auto &mf : input_collection.functions) {
+        auto invoker_str = meta_utils::generate_string_invoker_for_function(mf.signature, extended_types);
+        meta_utils::MetaFunction invoker(invoker_str, type_name_to_meta_type_map);
+        output_collection.add_function(invoker);
+    }
+
+    std::string header_str = output_collection.generate_header_file_string();
+    std::string cpp_str = output_collection.generate_cpp_file_string();
+
+    // Compute output dir: same dir as input header + /string_invoker
+    std::filesystem::path input_header_dir = std::filesystem::path(input_header_path).parent_path();
+    std::filesystem::path output_dir = input_header_dir / "string_invoker";
+
+    std::error_code ec;
+    if (!std::filesystem::exists(output_dir)) {
+        if (!std::filesystem::create_directories(output_dir, ec)) {
+            std::cerr << "Error: Failed to create directory '" << output_dir << "': " << ec.message() << std::endl;
+            return;
+        }
+    }
+
+    // use same base name as input header/source for output file names
+    std::string base_filename = std::filesystem::path(input_header_path).stem().string();
+
+    std::filesystem::path output_header = output_dir / (base_filename + ".hpp");
+    std::filesystem::path output_source = output_dir / (base_filename + ".cpp");
+
+    {
+        std::ofstream out_header(output_header);
+        if (!out_header) {
+            std::cerr << "Error: Could not open " << output_header << " for writing." << std::endl;
+        }
+        out_header << header_str;
+    }
+
+    {
+        std::ofstream out_source(output_source);
+        if (!out_source) {
+            std::cerr << "Error: Could not open " << output_source << " for writing." << std::endl;
+        }
+        out_source << cpp_str;
+    }
+
+    std::cout << "Generated files written to " << output_dir << std::endl;
 }
 
 } // namespace meta_utils
