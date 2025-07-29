@@ -401,35 +401,36 @@ class MetaFunctionCollection {
     std::vector<std::string> includes_required_for_declaration;
     std::vector<std::string> includes_required_for_definition;
 
-    MetaFunctionCollection() {};
+    MetaFunctionCollection() = default;
 
-    void add_function(MetaFunction mf) { functions.push_back(mf); }
+    void add_function(MetaFunction mf) { functions.push_back(std::move(mf)); }
 
     MetaFunctionCollection(const std::string &header_file_path, const std::string &cpp_file_path,
                            const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                                meta_utils::concrete_type_name_to_meta_type,
-                           const std::unordered_set<std::string> &signature_set = {},
-                           FilterMode mode = FilterMode::None) {
+                           const std::vector<std::string> &string_signatures = {}, FilterMode mode = FilterMode::None) {
         std::string header_source = read_file(header_file_path);
         std::string cpp_source = read_file(cpp_file_path);
 
-        name = extract_function_collection_name(header_source).value();
+        name = extract_function_collection_name(header_source).value_or("meta_function_collection");
         extract_includes(header_source, includes_required_for_declaration);
         extract_includes(cpp_source, includes_required_for_definition);
-        extract_functions(cpp_source, concrete_type_name_to_meta_type);
+
+        std::vector<MetaFunctionSignature> parsed_signatures;
+        for (const auto &str : string_signatures) {
+            MetaFunctionSignature mfs(str, concrete_type_name_to_meta_type);
+            parsed_signatures.push_back(mfs);
+        }
+
+        extract_functions(cpp_source, concrete_type_name_to_meta_type, parsed_signatures, mode);
     }
 
     std::string generate_header_file_string() {
         std::ostringstream oss;
 
-        // Assume this->name exists and is a valid string identifier
         std::string guard_macro = name;
-        std::transform(guard_macro.begin(), guard_macro.end(), guard_macro.begin(), [](unsigned char c) {
-            if (std::isalnum(c))
-                return static_cast<char>(std::toupper(c));
-            else
-                return '_';
-        });
+        std::transform(guard_macro.begin(), guard_macro.end(), guard_macro.begin(),
+                       [](unsigned char c) { return std::isalnum(c) ? static_cast<char>(std::toupper(c)) : '_'; });
         guard_macro += "_HPP";
 
         oss << "#ifndef " << guard_macro << "\n";
@@ -453,7 +454,6 @@ class MetaFunctionCollection {
         }
 
         oss << "\n#endif // " << guard_macro << "\n";
-
         return oss.str();
     }
 
@@ -503,14 +503,11 @@ class MetaFunctionCollection {
             if (std::regex_search(line, match, define_guard_regex)) {
                 std::string guard_name = match[1];
 
-                // Convert to lowercase
                 std::transform(guard_name.begin(), guard_name.end(), guard_name.begin(),
                                [](unsigned char c) { return std::tolower(c); });
 
-                // Remove trailing "_hpp" if present
                 const std::string suffix = "_hpp";
-                if (guard_name.size() >= suffix.size() &&
-                    guard_name.compare(guard_name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                if (guard_name.ends_with(suffix)) {
                     guard_name.erase(guard_name.size() - suffix.size());
                 }
 
@@ -534,20 +531,41 @@ class MetaFunctionCollection {
     }
 
     void extract_functions(const std::string &cpp_source,
-                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type) {
+                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type,
+                           const std::vector<MetaFunctionSignature> &filter_signatures, FilterMode mode) {
         std::regex func_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*?)\})");
         auto begin = std::sregex_iterator(cpp_source.begin(), cpp_source.end(), func_regex);
         auto end = std::sregex_iterator();
 
         for (auto it = begin; it != end; ++it) {
-            // std::cout << "in loop" << std::endl;
             try {
                 std::string whole_function = it->str();
-                functions.emplace_back(whole_function, concrete_type_name_to_meta_type);
+                MetaFunction mf(whole_function, concrete_type_name_to_meta_type);
+                const auto &sig = mf.signature;
+
+                bool match_found = std::any_of(filter_signatures.begin(), filter_signatures.end(),
+                                               [&](const MetaFunctionSignature &fs) { return fs == sig; });
+
+                bool allowed = true;
+                if (mode == FilterMode::Whitelist) {
+                    allowed = match_found;
+                } else if (mode == FilterMode::Blacklist) {
+                    allowed = !match_found;
+                }
+
+                if (allowed) {
+                    functions.push_back(std::move(mf));
+                }
             } catch (const std::exception &e) {
-                // optionally log and skip
+                // optionally log or skip
             }
         }
+    }
+
+    static std::string trim(const std::string &str) {
+        size_t first = str.find_first_not_of(" \t\n\r");
+        size_t last = str.find_last_not_of(" \t\n\r");
+        return (first == std::string::npos || last == std::string::npos) ? "" : str.substr(first, last - first + 1);
     }
 };
 
@@ -572,7 +590,9 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
 void generate_string_invokers_from_source_code(const std::string &input_header_path,
                                                const std::string &input_source_path,
                                                const std::vector<meta_utils::MetaType> &extended_types,
-                                               bool create_top_level_invoker = false);
+                                               bool create_top_level_invoker = false,
+                                               const std::vector<std::string> &string_signatures = {},
+                                               FilterMode mode = FilterMode::None);
 
 }; // namespace meta_utils
 

@@ -474,14 +474,15 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
 void generate_string_invokers_from_source_code(const std::string &input_header_path,
                                                const std::string &input_source_path,
                                                const std::vector<meta_utils::MetaType> &extended_types,
-                                               bool create_top_level_invoker) {
+                                               bool create_top_level_invoker,
+                                               const std::vector<std::string> &string_signatures, FilterMode mode) {
 
     const std::string output_name_prefix = "string_invoker_";
 
     auto type_name_to_meta_type_map = meta_utils::create_type_name_to_meta_type_map(extended_types);
 
     meta_utils::MetaFunctionCollection input_collection(input_header_path, input_source_path,
-                                                        type_name_to_meta_type_map);
+                                                        type_name_to_meta_type_map, string_signatures, mode);
 
     meta_utils::MetaFunctionCollection output_collection;
     output_collection.name = output_name_prefix + input_collection.name;
