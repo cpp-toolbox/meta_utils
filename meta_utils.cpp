@@ -295,6 +295,46 @@ std::string clean_type_string(const std::string &raw_type) {
     return s;
 }
 
+std::string generate_string_invoker_for_function_with_string_return_type(const MetaFunctionSignature &sig,
+                                                                         const std::vector<MetaType> &available_types) {
+    const std::string &return_type = sig.return_type;
+    const std::string &func_name = sig.name;
+
+    auto extended_type_name_to_meta_type = meta_utils::create_type_name_to_meta_type_map(available_types);
+
+    // Find the type_to_string_func for the return type (except void)
+    std::string return_type_to_string_func;
+    if (return_type != "void" && return_type != "std::string") {
+        auto meta_type_opt = meta_utils::parse_meta_type_from_string(return_type, extended_type_name_to_meta_type);
+        if (!meta_type_opt) {
+            throw std::runtime_error("Unknown return type: " + return_type);
+        }
+        return_type_to_string_func = meta_type_opt.value().type_to_string_func;
+    }
+
+    // Compose the new function name
+    std::string new_func_name = func_name + "_string_invoker_to_string";
+
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("std::optional<std::string> ", new_func_name, "(const std::string &input) {");
+    msa.add("    auto opt_result = ", func_name, "_string_invoker(input);");
+    msa.add("    if (!opt_result) return std::nullopt;");
+
+    if (return_type == "void") {
+        msa.add("    return std::string(); // void returns empty string");
+    } else if (return_type == "std::string") {
+        msa.add("    return *opt_result;");
+    } else {
+        msa.add("    auto conversion = ", return_type_to_string_func, ";");
+        msa.add("    return conversion(*opt_result);");
+    }
+
+    msa.add("}");
+
+    return msa.str();
+}
+
 std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
                                                  const std::vector<MetaType> &available_types) {
     const std::string &return_type = sig.return_type;
@@ -329,7 +369,7 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
 
     text_utils::MultilineStringAccumulator msa;
 
-    msa.add("std::optional<std::string> ", func_name, "_string_invoker(const std::string &input) {");
+    msa.add("std::optional<", return_type, "> ", func_name, "_string_invoker(const std::string &input) {");
     msa.add("    std::regex re(R\"(", function_invocation_regex, ")\");");
     msa.add("    std::smatch match;");
     msa.add("    if (!std::regex_match(input, match, re)) return std::nullopt;");
@@ -342,22 +382,9 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
 
     msa.add("");
 
-    // Call actual function
+    // call actual function
     msa.add("    ", return_type, " result = ", func_name, "(", text_utils::join(call_to_actual_func_args, ", "), ");");
-
-    // Handle return
-    if (return_type == "void") {
-        msa.add("    return std::string(); // void returns empty string");
-    } else if (return_type == "std::string") {
-        msa.add("    return result;");
-    } else {
-        std::string return_type_to_string_func =
-            meta_utils::parse_meta_type_from_string(return_type, extended_type_name_to_meta_type)
-                .value()
-                .type_to_string_func;
-        msa.add("    auto conversion = ", return_type_to_string_func, ";");
-        msa.add("    return conversion(result);");
-    }
+    msa.add("    return result;");
 
     msa.add("}");
     return msa.str();
@@ -372,6 +399,37 @@ std::string join(const std::vector<std::string> &v, const std::string &sep) {
             res += sep;
     }
     return res;
+}
+
+// TODO: the below two functions are simply mappings, create a generic map function in collection utils one day
+std::vector<MetaFunction>
+generate_string_invokers_to_string(std::vector<MetaFunction> mfs,
+                                   const std::vector<meta_utils::MetaType> &extended_types,
+                                   std::unordered_map<std::string, MetaType> type_name_to_meta_type_map) {
+
+    std::vector<MetaFunction> new_mfs;
+    for (const auto &mf : mfs) {
+        auto invoker_str_return_str =
+            meta_utils::generate_string_invoker_for_function_with_string_return_type(mf.signature, extended_types);
+        meta_utils::MetaFunction invoker_return_string(invoker_str_return_str, type_name_to_meta_type_map);
+        new_mfs.push_back(invoker_str_return_str);
+    }
+
+    return new_mfs;
+}
+
+std::vector<MetaFunction>
+generate_string_invokers(std::vector<MetaFunction> mfs, const std::vector<meta_utils::MetaType> &extended_types,
+                         std::unordered_map<std::string, MetaType> type_name_to_meta_type_map) {
+
+    std::vector<MetaFunction> new_mfs;
+    for (const auto &mf : mfs) {
+        auto invoker_str = meta_utils::generate_string_invoker_for_function(mf.signature, extended_types);
+        meta_utils::MetaFunction invoker(invoker_str, type_name_to_meta_type_map);
+        new_mfs.push_back(invoker);
+    }
+
+    return new_mfs;
 }
 
 std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc) {
@@ -403,7 +461,7 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
     for (const auto &func : mfc.functions) {
         oss << "    if (std::regex_match(invocation, std::regex(mfs_" << func.signature.name
             << ".invocation_regex))) {\n";
-        oss << "        return " << func.signature.name << "_string_invoker(invocation);\n";
+        oss << "        return " << func.signature.name << "_string_invoker_to_string(invocation);\n";
         oss << "    }\n";
     }
 
@@ -413,9 +471,12 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
     return oss.str();
 }
 
-void generate_string_invokers(const std::string &input_header_path, const std::string &input_source_path,
-                              const std::vector<meta_utils::MetaType> &extended_types,
-                              const std::string &output_name_prefix) {
+void generate_string_invokers_from_source_code(const std::string &input_header_path,
+                                               const std::string &input_source_path,
+                                               const std::vector<meta_utils::MetaType> &extended_types,
+                                               bool create_top_level_invoker) {
+
+    const std::string output_name_prefix = "string_invoker_";
 
     auto type_name_to_meta_type_map = meta_utils::create_type_name_to_meta_type_map(extended_types);
 
@@ -425,10 +486,13 @@ void generate_string_invokers(const std::string &input_header_path, const std::s
     meta_utils::MetaFunctionCollection output_collection;
     output_collection.name = output_name_prefix + input_collection.name;
     output_collection.includes_required_for_declaration = input_collection.includes_required_for_declaration;
+
     output_collection.includes_required_for_declaration.push_back(meta_utils::string_include);
     output_collection.includes_required_for_declaration.push_back(meta_utils::optional_include);
     output_collection.includes_required_for_declaration.push_back(
         "#include \"../../utility/meta_utils/meta_utils.hpp\"");
+    output_collection.includes_required_for_declaration.push_back(
+        "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"");
 
     output_collection.includes_required_for_definition = {
         "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
@@ -436,32 +500,33 @@ void generate_string_invokers(const std::string &input_header_path, const std::s
         "#include \"../../utility/glm_utils/glm_utils.hpp\"",
         "#include \"../../utility/glm_printing/glm_printing.hpp\"", meta_utils::regex_include};
 
-    // add collection-level invoker
-    auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(input_collection);
-    meta_utils::MetaFunction full_invoker(full_invoker_str, type_name_to_meta_type_map);
-    output_collection.add_function(full_invoker);
+    if (create_top_level_invoker) {
+        auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(input_collection);
+        meta_utils::MetaFunction full_invoker(full_invoker_str, type_name_to_meta_type_map);
+        output_collection.add_function(full_invoker);
+    }
 
-    // add per-function invokers
-    for (const auto &mf : input_collection.functions) {
-        auto invoker_str = meta_utils::generate_string_invoker_for_function(mf.signature, extended_types);
-        meta_utils::MetaFunction invoker(invoker_str, type_name_to_meta_type_map);
-        output_collection.add_function(invoker);
+    auto string_invokers =
+        generate_string_invokers(input_collection.functions, extended_types, type_name_to_meta_type_map);
+
+    if (create_top_level_invoker) {
+        auto string_invoker_to_strings =
+            generate_string_invokers_to_string(input_collection.functions, extended_types, type_name_to_meta_type_map);
+        for (const auto inv : string_invoker_to_strings) {
+            string_invokers.push_back(inv);
+        }
+    }
+
+    for (const auto &si : string_invokers) {
+        output_collection.add_function(si);
     }
 
     std::string header_str = output_collection.generate_header_file_string();
     std::string cpp_str = output_collection.generate_cpp_file_string();
 
-    // Compute output dir: same dir as input header + /string_invoker
+    // compute output dir: same dir as input header + /string_invoker
     std::filesystem::path input_header_dir = std::filesystem::path(input_header_path).parent_path();
     std::filesystem::path output_dir = input_header_dir / "string_invoker";
-
-    std::error_code ec;
-    if (!std::filesystem::exists(output_dir)) {
-        if (!std::filesystem::create_directories(output_dir, ec)) {
-            std::cerr << "Error: Failed to create directory '" << output_dir << "': " << ec.message() << std::endl;
-            return;
-        }
-    }
 
     // use same base name as input header/source for output file names
     std::string base_filename = std::filesystem::path(input_header_path).stem().string();
@@ -469,21 +534,8 @@ void generate_string_invokers(const std::string &input_header_path, const std::s
     std::filesystem::path output_header = output_dir / (base_filename + ".hpp");
     std::filesystem::path output_source = output_dir / (base_filename + ".cpp");
 
-    {
-        std::ofstream out_header(output_header);
-        if (!out_header) {
-            std::cerr << "Error: Could not open " << output_header << " for writing." << std::endl;
-        }
-        out_header << header_str;
-    }
-
-    {
-        std::ofstream out_source(output_source);
-        if (!out_source) {
-            std::cerr << "Error: Could not open " << output_source << " for writing." << std::endl;
-        }
-        out_source << cpp_str;
-    }
+    fs_utils::create_file_with_content(output_header, header_str);
+    fs_utils::create_file_with_content(output_source, cpp_str);
 
     std::cout << "Generated files written to " << output_dir << std::endl;
 }

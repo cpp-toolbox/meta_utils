@@ -9,6 +9,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <iterator>
+#include <unordered_set>
 
 #include "sbpt_generated_includes.hpp"
 
@@ -329,39 +330,24 @@ class MetaFunctionSignature {
 class MetaFunction {
   public:
     MetaFunctionSignature signature;
-    std::string body;
+    text_utils::MultilineStringAccumulator body;
 
     MetaFunction(const std::string &func_str,
                  const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                      meta_utils::concrete_type_name_to_meta_type) {
 
-        // std::cout << "MetaFunction start" << std::endl;
-        // std::cout << "1" << std::endl;
-        // std::cout << func_str << std::endl;
-
-        // static const std::regex function_regex(R"(([\w:\<\>\s,&\*]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
-        // static const std::regex function_regex(R"((.+?)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
         static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
 
-        // std::cout << "2" << std::endl;
         std::smatch match;
         if (!std::regex_search(func_str, match, function_regex)) {
             throw std::invalid_argument("Function string is not a valid function definition");
         }
 
-        // std::cout << "3" << std::endl;
-
         std::string header_signature = match[1].str() + " " + match[2].str() + "(" + match[3].str() + ")";
-
-        // std::cout << "4" << std::endl;
         signature = MetaFunctionSignature(header_signature, concrete_type_name_to_meta_type);
 
-        // std::cout << "5" << std::endl;
-        body = MetaFunction::trim(match[4]);
-
-        // std::cout << "6" << std::endl;
-
-        // std::cout << "MetaFunction end" << std::endl;
+        std::string trimmed_body = MetaFunction::trim(match[4]);
+        body.add_multiline(trimmed_body);
     }
 
     std::string to_lambda_string() const {
@@ -370,14 +356,29 @@ class MetaFunction {
 
         for (size_t i = 0; i < signature.parameters.size(); ++i) {
             const auto &param = signature.parameters[i];
-            // Format each parameter as "type name"
             oss << param.type.get_type_name() << " " << param.name;
             if (i + 1 < signature.parameters.size()) {
                 oss << ", ";
             }
         }
 
-        oss << ") -> " << signature.return_type << " {\n" << body << "\n}";
+        oss << ") -> " << signature.return_type << " {\n" << body.str() << "\n}";
+        return oss.str();
+    }
+
+    std::string to_string() const {
+        std::ostringstream oss;
+        oss << signature.return_type << " " << signature.name << "(";
+
+        for (size_t i = 0; i < signature.parameters.size(); ++i) {
+            const auto &param = signature.parameters[i];
+            oss << param.type.get_type_name() << " " << param.name;
+            if (i + 1 < signature.parameters.size()) {
+                oss << ", ";
+            }
+        }
+
+        oss << ") {\n" << body.str() << "\n}";
         return oss.str();
     }
 
@@ -388,6 +389,10 @@ class MetaFunction {
         return (begin == std::string::npos) ? "" : s.substr(begin, end - begin + 1);
     }
 };
+
+enum class FilterMode { None, Whitelist, Blacklist };
+
+// TODO: was about to add the white/blacklist logic now
 
 class MetaFunctionCollection {
   public:
@@ -402,7 +407,9 @@ class MetaFunctionCollection {
 
     MetaFunctionCollection(const std::string &header_file_path, const std::string &cpp_file_path,
                            const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
-                               meta_utils::concrete_type_name_to_meta_type) {
+                               meta_utils::concrete_type_name_to_meta_type,
+                           const std::unordered_set<std::string> &signature_set = {},
+                           FilterMode mode = FilterMode::None) {
         std::string header_source = read_file(header_file_path);
         std::string cpp_source = read_file(cpp_file_path);
 
@@ -468,7 +475,7 @@ class MetaFunctionCollection {
                     oss << ", ";
             }
             oss << ") {\n";
-            oss << func.body << "\n";
+            oss << func.body.str() << "\n";
             oss << "}\n\n";
         }
 
@@ -555,14 +562,17 @@ inline std::string string_include = "#include <string>";
 inline std::string optional_include = "#include <optional>";
 inline std::string regex_include = "#include <regex>";
 
+std::string generate_string_invoker_for_function_with_string_return_type(const MetaFunctionSignature &sig,
+                                                                         const std::vector<MetaType> &available_types);
 std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
                                                  const std::vector<MetaType> &available_types);
 
 std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc);
 
-void generate_string_invokers(const std::string &input_header_path, const std::string &input_source_path,
-                              const std::vector<meta_utils::MetaType> &extended_types,
-                              const std::string &output_name_prefix = "string_invoker_");
+void generate_string_invokers_from_source_code(const std::string &input_header_path,
+                                               const std::string &input_source_path,
+                                               const std::vector<meta_utils::MetaType> &extended_types,
+                                               bool create_top_level_invoker = false);
 
 }; // namespace meta_utils
 
