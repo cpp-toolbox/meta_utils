@@ -147,46 +147,82 @@ std::vector<std::string> split_args(const std::string &args_str) {
     return args;
 }
 
+std::string simplify_parameter(const std::string &param_str) {
+    // This regex handles:
+    // - optional 'const'
+    // - type with optional &/*
+    // - name
+    // - optional default argument (e.g., '= 5', '= T()')
+    static const std::regex param_re(R"(^\s*(?:const\s+)?(.+?)\s*[&*]?\s+(\w+)(?:\s*=\s*.+)?\s*$)");
+
+    std::smatch match;
+    if (std::regex_match(param_str, match, param_re)) {
+        std::string type = match[1].str();
+        std::string name = match[2].str();
+        return type + " " + name;
+    } else {
+        throw std::runtime_error("Could not simplify parameter string: " + param_str);
+    }
+}
+
 std::string generate_regex_to_match_valid_invocation_of_func(
     const std::string &signature, const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type) {
     // std::cout << " generate_regex_to_match_valid_invocation_of_func start " << signature << std::endl;
     // Parse signature: return_type func_name(arg_type arg_name, ...)
+
+    std::string return_type, func_name, args_str;
+
+    std::regex re(regex_utils::function_signature_ree);
     std::smatch match;
-    if (!std::regex_match(signature, match, regex_utils::function_signature_re)) {
-        throw std::invalid_argument("Invalid function signature");
+    if (!std::regex_match(signature, match, re)) {
+        std::cout << signature << " | " << regex_utils::function_signature_ree << std::endl;
+        std::regex re(regex_utils::constructor_signature_re);
+        if (!std::regex_match(signature, match, re)) {
+            throw std::invalid_argument("Invalid function or constructor signature");
+        } else { // we have a constructor
+
+            std::cout << "constructor" << return_type << std::endl;
+            return_type = match[1];
+            func_name = match[1];
+            args_str = match[2];
+        }
+    } else {
+        std::cout << "regular" << return_type << std::endl;
+        for (const auto &m : match) {
+            std::cout << m << std::endl;
+        }
+        return_type = text_utils::trim(match[1]);
+        func_name = match[2];
+        args_str = match[3];
     }
 
-    std::string return_type = text_utils::trim(match[1]);
-    std::string func_name = match[2];
-    std::string args_str = match[3];
+    std::cout << "Return type: " << return_type << std::endl;
+    std::cout << "Function name: " << func_name << std::endl;
+    std::cout << "Arguments: " << args_str << std::endl;
 
     auto args = split_args(args_str);
 
     std::vector<std::string> arg_types;
 
+    static const std::regex param_re(R"(^\s*(.+?)\s+(\w+)(\s*=.*)?$)");
+
     for (auto &arg : args) {
         if (arg.empty())
             continue;
 
-        std::istringstream iss(arg);
-        std::vector<std::string> tokens{std::istream_iterator<std::string>{iss}, std::istream_iterator<std::string>{}};
+        std::cout << arg << std::endl;
+        arg = simplify_parameter(arg);
+        std::cout << arg << std::endl;
 
-        if (tokens.size() < 2) {
-            throw std::invalid_argument("Each argument must have at least a type and a name");
+        std::smatch match;
+        if (!std::regex_match(arg, match, param_re)) {
+            throw std::invalid_argument("Each argument must match format: 'Type Name [= default]'. Got: " + arg);
         }
 
-        // Extract the name (last token)
-        std::string name = tokens.back();
+        std::string raw_type_str = match[1];
+        std::string name = match[2];
+        // std::string default_value = match[3]; // (optional) if needed later
 
-        // Combine the rest to form the raw type string
-        std::string raw_type_str;
-        for (size_t i = 0; i < tokens.size() - 1; ++i) {
-            if (i > 0)
-                raw_type_str += " ";
-            raw_type_str += tokens[i];
-        }
-
-        // Clean the type (remove const, &, *, etc.)
         std::string cleaned_type_str = clean_type_string(raw_type_str);
 
         arg_types.push_back(cleaned_type_str);
@@ -217,7 +253,9 @@ parse_meta_type_from_string(const std::string &type_str,
 
     // std::cout << "parse_meta_type_from_string start : " << type_str << std::endl;
 
-    std::string s = text_utils::trim(type_str);
+    std::cout << "parse_meta_type_from_string: " << type_str << std::endl;
+    std::string s = clean_type_string(type_str);
+    std::cout << "cleaned: " << s << std::endl;
 
     // for (const auto &entry : concrete_type_name_to_meta_type) {
     //     std::cout << "Key: " << entry.first << ", MetaType name: " << entry.second.to_string() << std::endl;
@@ -225,6 +263,8 @@ parse_meta_type_from_string(const std::string &type_str,
 
     if (auto it = concrete_type_name_to_meta_type.find(s); it != concrete_type_name_to_meta_type.end()) {
         return it->second;
+    } else {
+        std::cout << "the type " << s << " is not a concrete type" << std::endl;
     }
 
     // std::cout << "1" << std::endl;
@@ -247,7 +287,9 @@ parse_meta_type_from_string(const std::string &type_str,
 
         // std::cout << "4" << std::endl;
 
+        std::cout << "parsemetatype" << std::endl;
         for (const std::string &arg_str : inner_type_strs) {
+            std::cout << arg_str << std::endl;
 
             // std::cout << "5" << std::endl;
             auto maybe_inner = parse_meta_type_from_string(arg_str, concrete_type_name_to_meta_type);

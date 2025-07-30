@@ -1,15 +1,15 @@
 #ifndef META_UTILS_HPP
 #define META_UTILS_HPP
 
-#include <iostream>
-#include <optional>
-#include <string>
-#include <vector>
-#include <sstream>
 #include <fstream>
-#include <stdexcept>
+#include <iostream>
 #include <iterator>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "sbpt_generated_includes.hpp"
 
@@ -28,8 +28,8 @@ class MetaType {
     std::string literal_regex;
 
     // Optional pointer to underlying element type (e.g., for vector<T>)
-    // also note that when something is generic, we talk about the version with nullptr here, concrete types are when
-    // this is not a nullptr
+    // also note that when something is generic, we talk about the version with
+    // nullptr here, concrete types are when this is not a nullptr
     std::vector<MetaType> element_types;
 
     bool operator==(const MetaType &other) const {
@@ -102,8 +102,8 @@ inline std::string create_to_string_lambda(std::string type) {
 };
 
 // CONCRETE
-// NOTE: concrete types have the good property that given a type name, we can do a one to one mapping to one of the
-// below concrete types
+// NOTE: concrete types have the good property that given a type name, we can do
+// a one to one mapping to one of the below concrete types
 inline MetaType UNSIGNED_INT =
     MetaType("unsigned int", "[](const std::string &s) { return static_cast<unsigned int>(std::stoul(s)); }",
              create_to_string_lambda("unsigned int"), regex_utils::unsigned_int_regex);
@@ -127,11 +127,13 @@ inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { ret
                                   "[](const std::string &s) { return s; }", regex_utils::string_literal);
 
 // GENERICS
-// NOTE: generic types cannot be defined directly as variables, there are "infinitely" many types possible so we can't
-// actually make variables for them, instead we define a function that generates a concrete genric type for a given
-// generic type
+// NOTE: generic types cannot be defined directly as variables, there are
+// "infinitely" many types possible so we can't actually make variables for
+// them, instead we define a function that generates a concrete genric type for
+// a given generic type
 
-// NOTE: this function does not yet support recursive vector types (only one layer deep support)
+// NOTE: this function does not yet support recursive vector types (only one
+// layer deep support)
 std::string create_string_to_vector_of_type_func(MetaType type_parameter);
 std::string create_vector_of_type_to_string_func(MetaType type_parameter);
 inline MetaType construct_vector_metatype(MetaType generic_type) {
@@ -156,7 +158,8 @@ inline std::unordered_map<std::string, MetaType> create_type_name_to_meta_type_m
 inline const std::unordered_map<std::string, MetaType> concrete_type_name_to_meta_type =
     create_type_name_to_meta_type_map(concrete_types);
 // inline bool is_known_type(const std::string &s) {
-//     return std::ranges::any_of(concrete_types, [&](const MetaType &mt) { return mt.name == s; });
+//     return std::ranges::any_of(concrete_types, [&](const MetaType &mt) {
+//     return mt.name == s; });
 // }
 
 std::optional<MetaType>
@@ -174,47 +177,33 @@ class MetaParameter {
     MetaParameter(const std::string &input,
                   const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                       meta_utils::concrete_type_name_to_meta_type) {
+        std::cout << "MetaParameter start " << input << std::endl;
 
-        // std::cout << "MetaParameter start " << input << std::endl;
+        // Match:
+        // - leading whitespace
+        // - greedy type match that includes optional &, *, &&, const at the end
+        // - single space
+        // - variable name (word characters)
+        // - optional default assignment
+        static const std::regex param_re(R"(^\s*(.+?[\s*&]+)\s*(\w+)(\s*=.*)?$)");
 
-        std::istringstream iss(input);
-        std::vector<std::string> tokens{std::istream_iterator<std::string>{iss}, std::istream_iterator<std::string>{}};
-
-        if (tokens.size() < 2) {
-            throw std::invalid_argument("Invalid MetaParameter input: expected format 'Type Name'");
+        std::smatch match;
+        if (!std::regex_match(input, match, param_re)) {
+            throw std::invalid_argument("Invalid MetaParameter input: expected format 'Type Name [= default]'. Got: " +
+                                        input);
         }
 
-        // std::cout << "1" << std::endl;
+        std::string raw_type_str = match[1];
+        name = match[2];
 
-        name = tokens.back();
-
-        std::string raw_type_str;
-        for (size_t i = 0; i < tokens.size() - 1; ++i) {
-            if (i > 0)
-                raw_type_str += " ";
-            raw_type_str += tokens[i];
-        }
-
-        // std::cout << "2" << std::endl;
-
-        // std::cout << "raw_type_str: " << raw_type_str << std::endl;
         std::string cleaned_type_str = clean_type_string(raw_type_str);
-        // std::cout << "cleaned_type_str: " << cleaned_type_str << std::endl;
-
-        // std::cout << "3" << std::endl;
 
         auto parsed_type = parse_meta_type_from_string(cleaned_type_str, concrete_type_name_to_meta_type);
         if (!parsed_type.has_value()) {
             throw std::invalid_argument("Failed to parse MetaType from string: '" + cleaned_type_str + "'");
         }
 
-        // std::cout << "4" << std::endl;
-
         type = parsed_type.value();
-
-        // std::cout << "5" << std::endl;
-
-        // std::cout << "MetaParameter end " << input << std::endl;
     }
 
     bool operator==(const MetaParameter &other) const { return name == other.name && type == other.type; }
@@ -245,6 +234,7 @@ class MetaFunctionSignature {
   public:
     std::string name;
     std::string return_type;
+    std::string param_list;
     std::vector<MetaParameter> parameters;
     std::string invocation_regex;
 
@@ -257,29 +247,45 @@ class MetaFunctionSignature {
                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                               meta_utils::concrete_type_name_to_meta_type) {
 
-        // std::cout << "MetaFunctionSignature start " << input << std::endl;
+        std::cout << "MetaFunctionSignature start " << input << std::endl;
         // std::cout << "1" << std::endl;
-        static const std::regex signature_regex(R"(^\s*([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*$)");
+        static const std::regex signature_regex(regex_utils::function_signature_re);
+        // static const std::regex signature_regexx(
+        //     regex_utils::start_of_line + regex_utils::optional_ws +
+        //     regex_utils::capture(regex_utils::one_or_more(regex_utils::type_char_class)) +
+        //     regex_utils::one_or_more_ws + regex_utils::capture(regex_utils::word) + regex_utils::optional_ws +
+        //     regex_utils::wrap_parentheses(
+        //         regex_utils::capture(regex_utils::zero_or_more(regex_utils::negated_character_class({")"})))) +
+        //     regex_utils::optional_ws + regex_utils::end_of_line);
         std::smatch match;
         if (!std::regex_match(input, match, signature_regex)) {
-            throw std::invalid_argument(
-                "Invalid function signature format: expected 'ReturnType name(Type1 x, Type2 y)'");
+
+            static const std::regex constructor_regex(regex_utils::constructor_signature_re);
+            if (!std::regex_match(input, match, constructor_regex)) {
+                throw std::invalid_argument("Invalid function signature format: expected "
+                                            "'ReturnType name(Type1 x, Type2 y)' or a constructor");
+            } else { // constructor
+                return_type = match[1];
+                name = match[1];
+                param_list = match[2];
+            }
+        } else { // regular function
+            return_type = match[1];
+            name = match[2];
+            param_list = match[3];
         }
 
         // std::cout << "2" << std::endl;
 
-        return_type = match[1];
-        name = match[2];
-
         // std::cout << "3" << std::endl;
 
-        std::string param_list = match[3];
         std::vector<std::string> param_tokens = split_comma_separated(param_list);
 
+        std::cout << "params" << std::endl;
         for (const std::string &param_str : param_tokens) {
-            std::string trimmed = MetaFunctionSignature::trim(param_str);
-            if (!trimmed.empty()) {
-                parameters.emplace_back(trimmed, concrete_type_name_to_meta_type);
+            std::cout << param_str << std::endl;
+            if (!param_str.empty()) {
+                parameters.emplace_back(param_str, concrete_type_name_to_meta_type);
             }
         }
 
@@ -391,8 +397,6 @@ class MetaFunction {
 };
 
 enum class FilterMode { None, Whitelist, Blacklist };
-
-// TODO: was about to add the white/blacklist logic now
 
 class MetaFunctionCollection {
   public:
@@ -582,6 +586,7 @@ inline std::string regex_include = "#include <regex>";
 
 std::string generate_string_invoker_for_function_with_string_return_type(const MetaFunctionSignature &sig,
                                                                          const std::vector<MetaType> &available_types);
+
 std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
                                                  const std::vector<MetaType> &available_types);
 
