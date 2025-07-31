@@ -177,7 +177,6 @@ class MetaParameter {
     MetaParameter(const std::string &input,
                   const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                       meta_utils::concrete_type_name_to_meta_type) {
-        std::cout << "MetaParameter start " << input << std::endl;
 
         // Match:
         // - leading whitespace
@@ -237,18 +236,26 @@ class MetaFunctionSignature {
     std::string param_list;
     std::vector<MetaParameter> parameters;
     std::string invocation_regex;
+    std::string name_space;
+
+    std::string get_fully_qualified_name() const {
+        if (!name_space.empty()) {
+            return name_space + "::" + name;
+        }
+        return name;
+    }
 
     bool operator==(const MetaFunctionSignature &other) const {
         return name == other.name && parameters == other.parameters;
     }
 
     MetaFunctionSignature() {};
-    MetaFunctionSignature(const std::string &input,
+    MetaFunctionSignature(const std::string &input, const std::string &name_space,
                           const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
-                              meta_utils::concrete_type_name_to_meta_type) {
+                              meta_utils::concrete_type_name_to_meta_type)
+        : name_space(name_space) {
 
-        std::cout << "MetaFunctionSignature start " << input << std::endl;
-        // std::cout << "1" << std::endl;
+        auto cleaned_input = text_utils::join_multiline(input);
         static const std::regex signature_regex(regex_utils::function_signature_re);
         // static const std::regex signature_regexx(
         //     regex_utils::start_of_line + regex_utils::optional_ws +
@@ -258,10 +265,10 @@ class MetaFunctionSignature {
         //         regex_utils::capture(regex_utils::zero_or_more(regex_utils::negated_character_class({")"})))) +
         //     regex_utils::optional_ws + regex_utils::end_of_line);
         std::smatch match;
-        if (!std::regex_match(input, match, signature_regex)) {
+        if (!std::regex_match(cleaned_input, match, signature_regex)) {
 
             static const std::regex constructor_regex(regex_utils::constructor_signature_re);
-            if (!std::regex_match(input, match, constructor_regex)) {
+            if (!std::regex_match(cleaned_input, match, constructor_regex)) {
                 throw std::invalid_argument("Invalid function signature format: expected "
                                             "'ReturnType name(Type1 x, Type2 y)' or a constructor");
             } else { // constructor
@@ -275,27 +282,16 @@ class MetaFunctionSignature {
             param_list = match[3];
         }
 
-        // std::cout << "2" << std::endl;
-
-        // std::cout << "3" << std::endl;
-
         std::vector<std::string> param_tokens = split_comma_separated(param_list);
 
-        std::cout << "params" << std::endl;
         for (const std::string &param_str : param_tokens) {
-            std::cout << param_str << std::endl;
             if (!param_str.empty()) {
                 parameters.emplace_back(param_str, concrete_type_name_to_meta_type);
             }
         }
 
-        // std::cout << "4" << std::endl;
-
-        invocation_regex = generate_regex_to_match_valid_invocation_of_func(input, concrete_type_name_to_meta_type);
-
-        // std::cout << "5" << std::endl;
-
-        // std::cout << "MetaFunctionSignature end " << input << std::endl;
+        invocation_regex =
+            generate_regex_to_match_valid_invocation_of_func(cleaned_input, concrete_type_name_to_meta_type);
     }
 
     std::string to_string() const {
@@ -337,10 +333,13 @@ class MetaFunction {
   public:
     MetaFunctionSignature signature;
     text_utils::MultilineStringAccumulator body;
+    std::string name_space;
 
     MetaFunction(const std::string &func_str,
                  const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
-                     meta_utils::concrete_type_name_to_meta_type) {
+                     meta_utils::concrete_type_name_to_meta_type,
+                 const std::string &name_space = "")
+        : name_space(name_space) {
 
         static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
 
@@ -350,7 +349,7 @@ class MetaFunction {
         }
 
         std::string header_signature = match[1].str() + " " + match[2].str() + "(" + match[3].str() + ")";
-        signature = MetaFunctionSignature(header_signature, concrete_type_name_to_meta_type);
+        signature = MetaFunctionSignature(header_signature, name_space, concrete_type_name_to_meta_type);
 
         std::string trimmed_body = MetaFunction::trim(match[4]);
         body.add_multiline(trimmed_body);
@@ -374,7 +373,13 @@ class MetaFunction {
 
     std::string to_string() const {
         std::ostringstream oss;
-        oss << signature.return_type << " " << signature.name << "(";
+        oss << signature.return_type << " ";
+
+        if (!name_space.empty()) {
+            oss << name_space << "::";
+        }
+
+        oss << signature.name << "(";
 
         for (size_t i = 0; i < signature.parameters.size(); ++i) {
             const auto &param = signature.parameters[i];
@@ -398,12 +403,17 @@ class MetaFunction {
 
 enum class FilterMode { None, Whitelist, Blacklist };
 
+bool is_system_header(const std::string &line);
+bool is_local_header(const std::string &line);
+std::vector<std::string> get_system_headers(const std::vector<std::string> &headers);
+
 class MetaFunctionCollection {
   public:
     std::string name;
     std::vector<MetaFunction> functions;
     std::vector<std::string> includes_required_for_declaration;
     std::vector<std::string> includes_required_for_definition;
+    std::string name_space;
 
     MetaFunctionCollection() = default;
 
@@ -420,13 +430,15 @@ class MetaFunctionCollection {
         extract_includes(header_source, includes_required_for_declaration);
         extract_includes(cpp_source, includes_required_for_definition);
 
+        name_space = extract_top_level_namespace(cpp_source).value_or("");
+
         std::vector<MetaFunctionSignature> parsed_signatures;
         for (const auto &str : string_signatures) {
-            MetaFunctionSignature mfs(str, concrete_type_name_to_meta_type);
+            MetaFunctionSignature mfs(str, name_space, concrete_type_name_to_meta_type);
             parsed_signatures.push_back(mfs);
         }
 
-        extract_functions(cpp_source, concrete_type_name_to_meta_type, parsed_signatures, mode);
+        extract_functions(cpp_source, name_space, concrete_type_name_to_meta_type, parsed_signatures, mode);
     }
 
     std::string generate_header_file_string() {
@@ -534,42 +546,331 @@ class MetaFunctionCollection {
         }
     }
 
-    void extract_functions(const std::string &cpp_source,
+    std::string trim(const std::string &str) {
+        size_t start = str.find_first_not_of(" \t\n\r");
+        if (start == std::string::npos)
+            return "";
+        size_t end = str.find_last_not_of(" \t\n\r");
+        return str.substr(start, end - start + 1);
+    }
+
+    bool is_comment_or_empty(const std::string &line) {
+        std::string trimmed = trim(line);
+        return trimmed.empty() || trimmed.rfind("//", 0) == 0 || trimmed.rfind("/*", 0) == 0 ||
+               trimmed.rfind("*", 0) == 0;
+    }
+
+    std::string remove_comment_from_line(const std::string &line) {
+        size_t pos = line.find("//");
+        if (pos != std::string::npos) {
+            return line.substr(0, pos);
+        }
+        return line;
+    }
+
+    std::pair<int, int> count_braces_in_line(const std::string &line) {
+        int open_braces = 0;
+        int close_braces = 0;
+        bool in_string = false;
+        bool in_char = false;
+        bool escaped = false;
+
+        for (size_t j = 0; j < line.length(); ++j) {
+            char c = line[j];
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+
+            if (c == '"' && !in_char) {
+                in_string = !in_string;
+            } else if (c == '\'' && !in_string) {
+                in_char = !in_char;
+            } else if (!in_string && !in_char) {
+                if (c == '{')
+                    open_braces++;
+                else if (c == '}')
+                    close_braces++;
+            }
+        }
+
+        return {open_braces, close_braces};
+    }
+
+    bool is_block_terminator(const std::string &line) {
+        std::string cleaned = trim(remove_comment_from_line(line));
+        if (cleaned.empty())
+            return false;
+
+        return cleaned == "}" || cleaned == "};" || cleaned.rfind("};", cleaned.length() - 2) != std::string::npos;
+    }
+
+    bool is_standalone_statement(const std::string &line) {
+        std::string cleaned = trim(remove_comment_from_line(line));
+        if (cleaned.empty())
+            return false;
+
+        // Skip preprocessor directives
+        if (cleaned[0] == '#')
+            return true;
+
+        // Statements that typically end with semicolon and aren't part of function
+        // signatures
+        if (cleaned.back() == ';') {
+            // But allow function declarations/prototypes
+            if (cleaned.find('(') != std::string::npos && cleaned.find(')') != std::string::npos) {
+                return false; // Could be function prototype, don't treat as terminator
+            }
+            return true;
+        }
+
+        // Class/struct/namespace definitions
+        if (cleaned.rfind("namespace", 0) == 0 || cleaned.rfind("class ", 0) == 0 || cleaned.rfind("struct ", 0) == 0 ||
+            cleaned.rfind("enum ", 0) == 0 || cleaned.rfind("typedef", 0) == 0 || cleaned.rfind("using", 0) == 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    bool looks_like_function_definition(const std::string &line) {
+        std::string cleaned = trim(remove_comment_from_line(line));
+        if (cleaned.empty())
+            return false;
+
+        // Must have an opening brace to be a definition
+        if (cleaned.find('{') == std::string::npos)
+            return false;
+
+        // Skip variable initializations with braces
+        if (cleaned.find('=') != std::string::npos && cleaned.find("operator") == std::string::npos) {
+            return false;
+        }
+
+        // Skip class/struct/namespace definitions
+        if (cleaned.find("class") != std::string::npos || cleaned.find("struct") != std::string::npos ||
+            cleaned.find("namespace") != std::string::npos || cleaned.find("enum") != std::string::npos) {
+            return false;
+        }
+
+        return true;
+    }
+
+    std::vector<std::string> extract_top_level_functions(const std::string &source_code,
+                                                         bool namespace_wrapped = false) {
+        std::vector<std::string> functions;
+        std::vector<std::string> lines;
+        std::istringstream stream(source_code);
+        std::string line;
+
+        while (std::getline(stream, line)) {
+            lines.push_back(line);
+        }
+
+        std::cout << "Total lines to process: " << lines.size() << std::endl;
+        std::cout << "Looking for functions at depth: " << (namespace_wrapped ? 1 : 0) << std::endl;
+
+        int brace_depth = 0;
+        int target_depth = namespace_wrapped ? 1 : 0;
+
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const std::string &current_line = lines[i];
+
+            // Count braces in current line
+            auto [open_braces, close_braces] = count_braces_in_line(current_line);
+
+            // Log brace depth changes
+            if (open_braces > 0 || close_braces > 0) {
+                std::cout << "Line " << (i + 1) << " (depth " << brace_depth << "): \"" << trim(current_line)
+                          << "\" - open:" << open_braces << " close:" << close_braces << std::endl;
+            }
+
+            // First apply closing braces
+            brace_depth -= close_braces;
+
+            // Check if we found a function definition at the target depth
+            if (brace_depth == target_depth && open_braces > 0 && looks_like_function_definition(current_line)) {
+                std::cout << "*** POTENTIAL FUNCTION at line " << (i + 1) << " (depth " << brace_depth << ") ***"
+                          << std::endl;
+                std::cout << "Line content: \"" << trim(current_line) << "\"" << std::endl;
+
+                // Go backwards to collect the complete signature
+                std::vector<std::string> signature_lines;
+                int sig_start = static_cast<int>(i);
+
+                // Go backwards to find the complete function signature
+                int back_index = static_cast<int>(i) - 1;
+
+                std::cout << "Looking backwards for function signature..." << std::endl;
+
+                while (back_index >= 0) {
+                    const std::string &back_line = lines[back_index];
+                    std::string trimmed_back = trim(back_line);
+
+                    std::cout << "  Checking line " << (back_index + 1) << ": \"" << trimmed_back << "\"" << std::endl;
+
+                    // Stop if we hit a block terminator (end of previous
+                    // function/class/etc)
+                    if (is_block_terminator(back_line)) {
+                        std::cout << "  -> Found block terminator, stopping" << std::endl;
+                        break;
+                    }
+
+                    // Stop if we hit a standalone statement/declaration
+                    if (is_standalone_statement(back_line)) {
+                        std::cout << "  -> Found standalone statement, stopping" << std::endl;
+                        break;
+                    }
+
+                    // Skip comments and empty lines but don't include them
+                    if (is_comment_or_empty(back_line)) {
+                        std::cout << "  -> Skipping comment/empty line" << std::endl;
+                        back_index--;
+                        continue;
+                    }
+
+                    // Include this line in the signature
+                    std::cout << "  -> Including this line in signature" << std::endl;
+                    signature_lines.insert(signature_lines.begin(), back_line);
+                    sig_start = back_index;
+
+                    back_index--;
+                }
+
+                // Add the current line with the opening brace
+                signature_lines.push_back(current_line);
+
+                std::cout << "Function signature collected from lines " << (sig_start + 1) << " to " << (i + 1)
+                          << std::endl;
+
+                // Build the function text starting with the signature
+                std::string function_text;
+                for (const auto &sig_line : signature_lines) {
+                    function_text += sig_line + "\n";
+                }
+
+                // Track remaining open braces from the current line
+                int nested_braces = open_braces - close_braces;
+                size_t body_index = i + 1;
+
+                std::cout << "Collecting function body, starting with " << nested_braces << " open braces" << std::endl;
+
+                // Collect the function body
+                while (body_index < lines.size() && nested_braces > 0) {
+                    const std::string &body_line = lines[body_index];
+                    function_text += body_line + "\n";
+
+                    // Count braces in body line
+                    auto [body_open, body_close] = count_braces_in_line(body_line);
+                    nested_braces += (body_open - body_close);
+
+                    if (body_open > 0 || body_close > 0) {
+                        std::cout << "  Body line " << (body_index + 1) << ": open=" << body_open
+                                  << " close=" << body_close << " nested=" << nested_braces << std::endl;
+                    }
+
+                    body_index++;
+                }
+
+                std::cout << "Function body collection complete. Nested braces: " << nested_braces << std::endl;
+
+                // Add the function if we collected a complete one
+                if (nested_braces == 0 && !function_text.empty()) {
+                    // Clean up the function text
+                    while (!function_text.empty() && function_text.back() == '\n') {
+                        function_text.pop_back();
+                    }
+                    if (!function_text.empty()) {
+                        std::cout << "*** ADDING FUNCTION TO RESULTS ***" << std::endl;
+                        functions.push_back(function_text);
+                    }
+                } else {
+                    std::cout << "*** INCOMPLETE FUNCTION (nested_braces=" << nested_braces << "), NOT ADDING ***"
+                              << std::endl;
+                }
+
+                // Skip ahead past the function we just processed
+                i = body_index - 1;
+                std::cout << "Skipping ahead to line " << (i + 2) << std::endl;
+
+                // We need to continue with the correct brace depth
+                // Since we've processed this function, don't apply the opening braces
+                // again
+                continue;
+            }
+
+            // Apply opening braces to depth
+            brace_depth += open_braces;
+
+            if (open_braces > 0 || close_braces > 0) {
+                std::cout << "New brace depth: " << brace_depth << std::endl;
+            }
+        }
+
+        std::cout << "Final brace depth: " << brace_depth << std::endl;
+        std::cout << "Total functions found: " << functions.size() << std::endl;
+
+        return functions;
+    }
+
+    std::vector<std::string> get_function_strings_from_code(const std::string &file_path,
+                                                            bool namespace_wrapped = false) {
+        std::ifstream file(file_path);
+        if (!file.is_open()) {
+            std::cerr << "Error: Could not open file " << file_path << std::endl;
+            return {};
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return extract_top_level_functions(buffer.str(), namespace_wrapped);
+    }
+
+    void extract_functions(const std::string &cpp_source, const std::string &name_space,
                            const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type,
                            const std::vector<MetaFunctionSignature> &filter_signatures, FilterMode mode) {
-        std::regex func_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*?)\})");
-        auto begin = std::sregex_iterator(cpp_source.begin(), cpp_source.end(), func_regex);
-        auto end = std::sregex_iterator();
+        bool namespace_wrapped = name_space != "";
+        // Extract top-level function strings
+        std::vector<std::string> function_strings = extract_top_level_functions(cpp_source, namespace_wrapped);
 
-        for (auto it = begin; it != end; ++it) {
+        for (const std::string &func_str : function_strings) {
             try {
-                std::string whole_function = it->str();
-                MetaFunction mf(whole_function, concrete_type_name_to_meta_type);
+                MetaFunction mf(func_str, concrete_type_name_to_meta_type, name_space);
                 const auto &sig = mf.signature;
 
                 bool match_found = std::any_of(filter_signatures.begin(), filter_signatures.end(),
                                                [&](const MetaFunctionSignature &fs) { return fs == sig; });
 
-                bool allowed = true;
-                if (mode == FilterMode::Whitelist) {
-                    allowed = match_found;
-                } else if (mode == FilterMode::Blacklist) {
-                    allowed = !match_found;
-                }
+                bool allowed = (mode == FilterMode::Whitelist)   ? match_found
+                               : (mode == FilterMode::Blacklist) ? !match_found
+                                                                 : true;
 
                 if (allowed) {
                     functions.push_back(std::move(mf));
                 }
             } catch (const std::exception &e) {
-                // optionally log or skip
+                std::cout << "invalid func\n" << func_str << std::endl;
             }
         }
     }
 
-    static std::string trim(const std::string &str) {
-        size_t first = str.find_first_not_of(" \t\n\r");
-        size_t last = str.find_last_not_of(" \t\n\r");
-        return (first == std::string::npos || last == std::string::npos) ? "" : str.substr(first, last - first + 1);
+    std::optional<std::string> extract_top_level_namespace(const std::string &source_code) {
+        std::regex namespace_regex(R"(\bnamespace\s+(\w+)\s*\{)");
+        std::smatch match;
+
+        if (std::regex_search(source_code, match, namespace_regex)) {
+            if (match.size() >= 2) {
+                return match[1].str(); // the captured namespace name
+            }
+        }
+
+        return std::nullopt; // no namespace found
     }
 };
 
@@ -588,7 +889,8 @@ std::string generate_string_invoker_for_function_with_string_return_type(const M
                                                                          const std::vector<MetaType> &available_types);
 
 std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
-                                                 const std::vector<MetaType> &available_types);
+                                                 const std::vector<MetaType> &available_types,
+                                                 const std ::string &func_postfix = "_string_invoker");
 
 std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc);
 
@@ -598,6 +900,8 @@ void generate_string_invokers_from_source_code(const std::string &input_header_p
                                                bool create_top_level_invoker = false,
                                                const std::vector<std::string> &string_signatures = {},
                                                FilterMode mode = FilterMode::None);
+
+MetaFunction generate_interactive_invoker(std::vector<meta_utils::MetaType> available_types);
 
 }; // namespace meta_utils
 
