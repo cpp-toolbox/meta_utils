@@ -283,6 +283,8 @@ parse_meta_type_from_string(const std::string &type_str,
         return it->second;
     } // now we know that the type is a generic type
 
+    std::cout << type_str << " is not a concrete type" << std::endl;
+
     // try to match template type: base<...>
     static const std::regex template_regex(R"((\w+(?:::\w+)*)\s*<\s*([^<>]+(?:<[^<>]+>[^<>]*)*)\s*>)");
     std::smatch match;
@@ -290,6 +292,9 @@ parse_meta_type_from_string(const std::string &type_str,
 
         std::string base_type = match[1].str(); // e.g., "std::vector"
         std::string args_str = match[2].str();  // e.g., "int" or "std::string, std::vector<int>"
+
+        std::cout << "base_type: " << base_type << std::endl;
+        std::cout << "args_str: " << args_str << std::endl;
 
         // parse argument types recursively
         std::vector<std::string> inner_type_strs = split_template_args(args_str);
@@ -474,16 +479,46 @@ generate_string_invokers(std::vector<MetaFunction> mfs, const std::vector<meta_u
     return new_mfs;
 }
 
-std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc) {
+std::vector<std::string> generate_type_grouped_invokers(const std::vector<meta_utils::MetaFunction> &string_invokers) {
+    std::unordered_map<std::string, std::vector<meta_utils::MetaFunction>> return_type_to_funcs;
+
+    for (const auto &si : string_invokers) {
+        return_type_to_funcs[si.signature.return_type].push_back(si);
+    }
+
+    std::vector<std::string> type_grouped_invokers;
+    for (const auto &[return_type, funcs] : return_type_to_funcs) {
+        type_grouped_invokers.push_back(
+            generate_string_invoker_for_function_collection(funcs, return_type, "_string_invoker"));
+    }
+
+    return type_grouped_invokers;
+}
+
+std::string sanitize_type(const std::string &type_str) {
+    std::string fixed;
+    fixed = text_utils::replace_substring(type_str, "::", "_");
+    fixed = text_utils::replace_substring(fixed, "<", "_");
+    fixed = text_utils::replace_substring(fixed, ">", "");
+    return fixed;
+}
+
+// we operate under the assumption that every function in the collection has the same return type.
+std::string generate_string_invoker_for_function_collection(std::vector<MetaFunction> mfs_with_same_return_type,
+                                                            std::string return_type, std::string func_postfix) {
     std::ostringstream oss;
 
-    oss << "std::optional<std::string> invoke(const std::string &invocation, std::vector<meta_utils::MetaType> "
+    oss << "std::optional<" << return_type << "> invoker_that_returns_" << sanitize_type(return_type)
+        << "(const std::string &invocation, std::vector<meta_utils::MetaType> "
            "available_types) "
            "{\n\n";
     oss << "    auto type_name_to_meta_type_map = meta_utils::create_type_name_to_meta_type_map(available_types);\n";
 
     // Generate MetaFunctionSignature declarations
-    for (const auto &func : mfc.functions) {
+    for (const auto &func : mfs_with_same_return_type) {
+
+        // TODO: do this cleaner in the future
+
         oss << "    meta_utils::MetaFunctionSignature mfs_" << func.signature.name << "(\""
             << func.signature.return_type << " " << func.signature.name << "(";
 
@@ -500,14 +535,14 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
     oss << "\n";
 
     // Generate if-else chain for invocation matching
-    for (const auto &func : mfc.functions) {
+    for (const auto &func : mfs_with_same_return_type) {
         oss << "    if (std::regex_match(invocation, std::regex(mfs_" << func.signature.name
             << ".invocation_regex))) {\n";
-        oss << "        return " << func.signature.name << "_string_invoker_to_string(invocation);\n";
+        oss << "        return " << func.signature.name << func_postfix << "(invocation);\n";
         oss << "    }\n";
     }
 
-    oss << "\n    return \"No matching function signature.\";\n";
+    oss << "\n    return std::nullopt;\n";
     oss << "}\n";
 
     return oss.str();
@@ -516,7 +551,7 @@ std::string generate_string_invoker_for_function_collection(const MetaFunctionCo
 void generate_string_invokers_from_source_code(const std::string &input_header_path,
                                                const std::string &input_source_path,
                                                const std::vector<meta_utils::MetaType> &extended_types,
-                                               bool create_top_level_invoker,
+                                               bool create_top_level_invoker, bool create_type_grouped_invokers,
                                                const std::vector<std::string> &string_signatures, FilterMode mode) {
 
     const std::string output_name_prefix = "string_invoker_";
@@ -552,22 +587,41 @@ void generate_string_invokers_from_source_code(const std::string &input_header_p
         "#include \"" + std::string(rel_glm_utils_path) + "\"",
         "#include \"" + std::string(rel_glm_printing_path) + "\"", meta_utils::regex_include};
 
-    if (create_top_level_invoker) {
-        auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(input_collection);
-        meta_utils::MetaFunction full_invoker(full_invoker_str, type_name_to_meta_type_map);
-        output_collection.add_function(full_invoker);
-        output_collection.add_function(generate_interactive_invoker(extended_types));
-    }
-
-    auto all_needed_functions =
+    std::cout << "0" << std::endl;
+    auto string_invokers =
         generate_string_invokers(input_collection.functions, extended_types, type_name_to_meta_type_map);
 
+    std::cout << "1" << std::endl;
+
+    if (create_type_grouped_invokers) {
+        std::cout << "3" << std::endl;
+        auto type_grouped_invokers = generate_type_grouped_invokers(input_collection.functions);
+        for (const auto &type_grouped_invoker : type_grouped_invokers) {
+            std::cout << "4" << std::endl;
+            std::cout << "right before" << std::endl;
+            meta_utils::MetaFunction full_invoker(type_grouped_invoker, type_name_to_meta_type_map);
+            std::cout << "right after" << std::endl;
+            output_collection.add_function(full_invoker);
+        }
+    }
+
+    std::cout << "5" << std::endl;
+
+    auto all_needed_functions = string_invokers;
+
+    // we also need ones that return optional strings.
     if (create_top_level_invoker) {
         auto string_invoker_to_strings =
             generate_string_invokers_to_string(input_collection.functions, extended_types, type_name_to_meta_type_map);
         for (const auto inv : string_invoker_to_strings) {
             all_needed_functions.push_back(inv);
         }
+
+        auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(
+            input_collection.functions, "std::string", "_string_invoker_to_string");
+        meta_utils::MetaFunction full_invoker(full_invoker_str, type_name_to_meta_type_map);
+        output_collection.add_function(full_invoker);
+        output_collection.add_function(generate_interactive_invoker(extended_types));
     }
 
     for (const auto &si : all_needed_functions) {
@@ -623,7 +677,7 @@ void start_interactive_invoker(std::vector<meta_utils::MetaType> available_types
         if (input == "quit")
             break;
 
-        std::optional<std::string> result = invoke(input, available_types);
+        std::optional<std::string> result = invoker_that_returns_std_string(input, available_types);
         if (result.has_value()) {
             std::cout << "Result: " << result.value() << "\n";
         } else {

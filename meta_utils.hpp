@@ -10,6 +10,8 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <functional>
+#include <cstddef> // for size_t
 
 #include "sbpt_generated_includes.hpp"
 
@@ -126,6 +128,9 @@ inline MetaType DOUBLE = MetaType("double", "[](const std::string &s) { return s
 inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { return s; }",
                                   "[](const std::string &s) { return s; }", regex_utils::string_literal);
 
+inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\" || s == \"1\"; }",
+                                create_to_string_lambda("bool"), R"(true|false|1|0)");
+
 // GENERICS
 // NOTE: generic types cannot be defined directly as variables, there are
 // "infinitely" many types possible so we can't actually make variables for
@@ -143,7 +148,7 @@ inline MetaType construct_vector_metatype(MetaType generic_type) {
                     regex_utils::any_char_greedy, {generic_type});
 };
 
-inline std::vector<MetaType> concrete_types = {INT, UNSIGNED_INT, FLOAT, DOUBLE, SHORT, LONG, STRING};
+inline std::vector<MetaType> concrete_types = {INT, UNSIGNED_INT, FLOAT, DOUBLE, SHORT, LONG, STRING, BOOL};
 inline std::unordered_map<std::string, std::function<MetaType(MetaType)>> generic_type_to_metatype_constructor = {
     {"std::vector", [](MetaType mt) -> MetaType { return construct_vector_metatype(mt); }}};
 
@@ -174,6 +179,7 @@ class MetaParameter {
     std::string name;
     MetaType type;
 
+    MetaParameter() = default;
     MetaParameter(const std::string &input,
                   const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                       meta_utils::concrete_type_name_to_meta_type) {
@@ -335,11 +341,15 @@ class MetaFunction {
     text_utils::MultilineStringAccumulator body;
     std::string name_space;
 
+    MetaFunction() = default;
     MetaFunction(const std::string &func_str,
                  const std::unordered_map<std::string, MetaType> &concrete_type_name_to_meta_type =
                      meta_utils::concrete_type_name_to_meta_type,
                  const std::string &name_space = "")
         : name_space(name_space) {
+
+        std::cout << "MetaFunction" << std::endl;
+        std::cout << "func_str: " << func_str << std::endl;
 
         static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
 
@@ -673,8 +683,8 @@ class MetaFunctionCollection {
             lines.push_back(line);
         }
 
-        std::cout << "Total lines to process: " << lines.size() << std::endl;
-        std::cout << "Looking for functions at depth: " << (namespace_wrapped ? 1 : 0) << std::endl;
+        // std::cout << "Total lines to process: " << lines.size() << std::endl;
+        // std::cout << "Looking for functions at depth: " << (namespace_wrapped ? 1 : 0) << std::endl;
 
         int brace_depth = 0;
         int target_depth = namespace_wrapped ? 1 : 0;
@@ -687,8 +697,8 @@ class MetaFunctionCollection {
 
             // Log brace depth changes
             if (open_braces > 0 || close_braces > 0) {
-                std::cout << "Line " << (i + 1) << " (depth " << brace_depth << "): \"" << trim(current_line)
-                          << "\" - open:" << open_braces << " close:" << close_braces << std::endl;
+                // std::cout << "Line " << (i + 1) << " (depth " << brace_depth << "): \"" << trim(current_line)
+                //           << "\" - open:" << open_braces << " close:" << close_braces << std::endl;
             }
 
             // First apply closing braces
@@ -696,9 +706,9 @@ class MetaFunctionCollection {
 
             // Check if we found a function definition at the target depth
             if (brace_depth == target_depth && open_braces > 0 && looks_like_function_definition(current_line)) {
-                std::cout << "*** POTENTIAL FUNCTION at line " << (i + 1) << " (depth " << brace_depth << ") ***"
-                          << std::endl;
-                std::cout << "Line content: \"" << trim(current_line) << "\"" << std::endl;
+                // std::cout << "*** POTENTIAL FUNCTION at line " << (i + 1) << " (depth " << brace_depth << ") ***"
+                //           << std::endl;
+                // std::cout << "Line content: \"" << trim(current_line) << "\"" << std::endl;
 
                 // Go backwards to collect the complete signature
                 std::vector<std::string> signature_lines;
@@ -707,36 +717,37 @@ class MetaFunctionCollection {
                 // Go backwards to find the complete function signature
                 int back_index = static_cast<int>(i) - 1;
 
-                std::cout << "Looking backwards for function signature..." << std::endl;
+                // std::cout << "Looking backwards for function signature..." << std::endl;
 
                 while (back_index >= 0) {
                     const std::string &back_line = lines[back_index];
                     std::string trimmed_back = trim(back_line);
 
-                    std::cout << "  Checking line " << (back_index + 1) << ": \"" << trimmed_back << "\"" << std::endl;
+                    // std::cout << "  Checking line " << (back_index + 1) << ": \"" << trimmed_back << "\"" <<
+                    // std::endl;
 
                     // Stop if we hit a block terminator (end of previous
                     // function/class/etc)
                     if (is_block_terminator(back_line)) {
-                        std::cout << "  -> Found block terminator, stopping" << std::endl;
+                        // std::cout << "  -> Found block terminator, stopping" << std::endl;
                         break;
                     }
 
                     // Stop if we hit a standalone statement/declaration
                     if (is_standalone_statement(back_line)) {
-                        std::cout << "  -> Found standalone statement, stopping" << std::endl;
+                        // std::cout << "  -> Found standalone statement, stopping" << std::endl;
                         break;
                     }
 
                     // Skip comments and empty lines but don't include them
                     if (is_comment_or_empty(back_line)) {
-                        std::cout << "  -> Skipping comment/empty line" << std::endl;
+                        // std::cout << "  -> Skipping comment/empty line" << std::endl;
                         back_index--;
                         continue;
                     }
 
-                    // Include this line in the signature
-                    std::cout << "  -> Including this line in signature" << std::endl;
+                    // include this line in the signature
+                    // std::cout << "  -> Including this line in signature" << std::endl;
                     signature_lines.insert(signature_lines.begin(), back_line);
                     sig_start = back_index;
 
@@ -746,8 +757,8 @@ class MetaFunctionCollection {
                 // Add the current line with the opening brace
                 signature_lines.push_back(current_line);
 
-                std::cout << "Function signature collected from lines " << (sig_start + 1) << " to " << (i + 1)
-                          << std::endl;
+                // std::cout << "Function signature collected from lines " << (sig_start + 1) << " to " << (i + 1)
+                //           << std::endl;
 
                 // Build the function text starting with the signature
                 std::string function_text;
@@ -759,7 +770,8 @@ class MetaFunctionCollection {
                 int nested_braces = open_braces - close_braces;
                 size_t body_index = i + 1;
 
-                std::cout << "Collecting function body, starting with " << nested_braces << " open braces" << std::endl;
+                // std::cout << "Collecting function body, starting with " << nested_braces << " open braces" <<
+                // std::endl;
 
                 // Collect the function body
                 while (body_index < lines.size() && nested_braces > 0) {
@@ -771,14 +783,14 @@ class MetaFunctionCollection {
                     nested_braces += (body_open - body_close);
 
                     if (body_open > 0 || body_close > 0) {
-                        std::cout << "  Body line " << (body_index + 1) << ": open=" << body_open
-                                  << " close=" << body_close << " nested=" << nested_braces << std::endl;
+                        // std::cout << "  Body line " << (body_index + 1) << ": open=" << body_open
+                        //           << " close=" << body_close << " nested=" << nested_braces << std::endl;
                     }
 
                     body_index++;
                 }
 
-                std::cout << "Function body collection complete. Nested braces: " << nested_braces << std::endl;
+                // std::cout << "Function body collection complete. Nested braces: " << nested_braces << std::endl;
 
                 // Add the function if we collected a complete one
                 if (nested_braces == 0 && !function_text.empty()) {
@@ -787,17 +799,17 @@ class MetaFunctionCollection {
                         function_text.pop_back();
                     }
                     if (!function_text.empty()) {
-                        std::cout << "*** ADDING FUNCTION TO RESULTS ***" << std::endl;
+                        // std::cout << "*** ADDING FUNCTION TO RESULTS ***" << std::endl;
                         functions.push_back(function_text);
                     }
                 } else {
-                    std::cout << "*** INCOMPLETE FUNCTION (nested_braces=" << nested_braces << "), NOT ADDING ***"
-                              << std::endl;
+                    // std::cout << "*** INCOMPLETE FUNCTION (nested_braces=" << nested_braces << "), NOT ADDING ***"
+                    //           << std::endl;
                 }
 
                 // Skip ahead past the function we just processed
                 i = body_index - 1;
-                std::cout << "Skipping ahead to line " << (i + 2) << std::endl;
+                // std::cout << "Skipping ahead to line " << (i + 2) << std::endl;
 
                 // We need to continue with the correct brace depth
                 // Since we've processed this function, don't apply the opening braces
@@ -809,12 +821,12 @@ class MetaFunctionCollection {
             brace_depth += open_braces;
 
             if (open_braces > 0 || close_braces > 0) {
-                std::cout << "New brace depth: " << brace_depth << std::endl;
+                // std::cout << "New brace depth: " << brace_depth << std::endl;
             }
         }
 
-        std::cout << "Final brace depth: " << brace_depth << std::endl;
-        std::cout << "Total functions found: " << functions.size() << std::endl;
+        // std::cout << "Final brace depth: " << brace_depth << std::endl;
+        // std::cout << "Total functions found: " << functions.size() << std::endl;
 
         return functions;
     }
@@ -892,17 +904,47 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
                                                  const std::vector<MetaType> &available_types,
                                                  const std ::string &func_postfix = "_string_invoker");
 
-std::string generate_string_invoker_for_function_collection(const MetaFunctionCollection &mfc);
+std::string generate_string_invoker_for_function_collection(std::vector<MetaFunction> mfs_with_same_return_type,
+                                                            std::string return_type, std::string func_postfix);
 
 void generate_string_invokers_from_source_code(const std::string &input_header_path,
                                                const std::string &input_source_path,
                                                const std::vector<meta_utils::MetaType> &extended_types,
                                                bool create_top_level_invoker = false,
+                                               bool create_type_grouped_invokers = false,
                                                const std::vector<std::string> &string_signatures = {},
                                                FilterMode mode = FilterMode::None);
 
 MetaFunction generate_interactive_invoker(std::vector<meta_utils::MetaType> available_types);
 
 }; // namespace meta_utils
+
+// Helper function to combine hashes (like boost::hash_combine)
+inline void hash_combine(std::size_t &seed, std::size_t value) noexcept {
+    seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
+// Forward declare so we can use recursively
+namespace std {
+template <> struct hash<meta_utils::MetaType> {
+    size_t operator()(const meta_utils::MetaType &mt) const noexcept {
+
+        size_t seed = 0;
+
+        // Hash each string member
+        hash_combine(seed, std::hash<std::string>{}(mt.base_type_name));
+        hash_combine(seed, std::hash<std::string>{}(mt.string_to_type_func));
+        hash_combine(seed, std::hash<std::string>{}(mt.type_to_string_func));
+        hash_combine(seed, std::hash<std::string>{}(mt.literal_regex));
+
+        // Hash vector elements recursively
+        for (const meta_utils::MetaType &elem : mt.element_types) {
+            hash_combine(seed, std::hash<meta_utils::MetaType>{}(elem));
+        }
+
+        return seed;
+    }
+};
+} // namespace std
 
 #endif // META_UTILS_HPP
