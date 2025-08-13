@@ -240,7 +240,6 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
     std::smatch match;
     if (!std::regex_match(signature, match, re)) {
 
-        std::cout << signature << " | " << regex_utils::function_signature_ree << std::endl;
         std::regex re(regex_utils::constructor_signature_re);
         if (!std::regex_match(signature, match, re)) {
 
@@ -494,7 +493,9 @@ std::vector<MetaVariable> generate_meta_function_signature_variables(std::vector
                                        text_utils::surround(mf.name_space, text_utils::double_quote)},
                                       ", ");
 
-        MetaVariable mv("meta_utils::MetaFunctionSignature", var_name, value, MetaVariable::InitStyle::Definition);
+        std::cout << "name place: " << mf.name_space << std::endl;
+        MetaVariable mv("meta_utils::MetaFunctionSignature", var_name, value, MetaVariable::InitStyle::Definition,
+                        mf.name_space);
         mf_vars.push_back(mv);
     }
     return mf_vars;
@@ -545,17 +546,6 @@ std::string generate_string_invoker_for_function_collection(std::vector<MetaFunc
         << "(const std::string &invocation) "
            "{\n\n";
 
-    // Generate MetaFunctionSignature declarations
-    for (const auto &func : mfs_with_same_return_type) {
-
-        oss << "    meta_utils::MetaFunctionSignature mfs_" << func.signature.name << "(\""
-            << func.signature.to_string();
-
-        oss << "\", \"" << func.name_space << "\");\n";
-    }
-
-    oss << "\n";
-
     // Generate if-else chain for invocation matching
     for (const auto &func : mfs_with_same_return_type) {
         oss << "    if (std::regex_match(invocation, std::regex(mfs_" << func.signature.name
@@ -581,6 +571,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     std::vector<std::string> header_paths_of_other_string_invokers;
 
+    std::vector<MetaFunctionCollection> generated_mfcs;
+
     for (const auto &setting : settings) {
         std::string invoker_path = fs_utils::get_containing_directory(setting.header_file_path) + "/string_invoker/" +
                                    fs_utils::get_filename_from_path(setting.header_file_path);
@@ -588,8 +580,10 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         auto rel_include = "#include \"" + rel_path + "\"";
         header_paths_of_other_string_invokers.push_back(rel_include);
         MetaFunctionCollection mfc = generate_string_invokers_from_header_and_source(setting);
+        generated_mfcs.push_back(mfc);
         for (const auto &fun : mfc.functions) {
             bool is_string_to_type_invoker = text_utils::starts_with(fun.signature.name, "invoker_that_returns");
+            // NOTE: this is a sketchy way of extracting the type with assumptions
             std::string return_type = text_utils::replace_substring(fun.signature.name, "invoker_that_returns", "");
             if (is_string_to_type_invoker) {
                 return_type_to_invokers_that_return_it[return_type].push_back(fun);
@@ -597,9 +591,32 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         }
     }
 
+    // NOTE: now we want to collect all the functions that we can call, which is given by the input collection
+    std::vector<MetaVariable> all_meta_function_signatures_from_sub_string_invokers =
+        collection_utils::join_all_vectors(
+            collection_utils::map_vector(generated_mfcs, [](MetaFunctionCollection mfc) { return mfc.variables; }));
+
+    MetaVariable vector_of_meta_function_signature_var_names(
+        "std::vector<meta_utils::MetaFunctionSignature>", "all_meta_function_signatures",
+        text_utils::surround(text_utils::join(collection_utils::map_vector(
+                                                  all_meta_function_signatures_from_sub_string_invokers,
+                                                  [](MetaVariable mv) {
+                                                      bool uses_namespace = mv.name_space != "";
+                                                      if (uses_namespace) {
+                                                          std::cout << "uses namespace" << std::endl;
+                                                      } else {
+                                                          std::cout << "doesn't uses namespace" << std::endl;
+                                                      }
+                                                      return (uses_namespace ? mv.name_space + "::" : "") + mv.name;
+                                                  }),
+                                              ", "),
+                             "{", "}"));
+
     MetaFunctionCollection top_level_invoker_mfc;
     top_level_invoker_mfc.name = "string_invoker";
     top_level_invoker_mfc.name_space = "string_invoker";
+
+    top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
     top_level_invoker_mfc.includes_required_for_declaration = header_paths_of_other_string_invokers;
     top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"string_invoker.hpp\"");
@@ -642,7 +659,12 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
     meta_utils::MetaFunctionCollection input_collection(input_header_path, input_source_path, string_signatures, mode);
 
     meta_utils::MetaFunctionCollection output_collection;
-    output_collection.name_space = input_collection.name_space + "_string_invokers";
+
+    bool input_collection_doesnt_use_namespace = input_collection.name_space == "";
+
+    output_collection.name_space =
+        (input_collection_doesnt_use_namespace ? input_collection.name : input_collection.name_space) +
+        "_string_invokers";
     output_collection.name = output_name_prefix + input_collection.name;
     output_collection.includes_required_for_declaration =
         get_system_headers(input_collection.includes_required_for_declaration);
@@ -659,18 +681,26 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
     output_collection.includes_required_for_declaration.push_back(
         "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"");
 
-    auto rel_glm_utils_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_utils/glm_utils.hpp");
-    auto rel_glm_printing_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_printing/glm_printing.hpp");
+    // auto rel_glm_utils_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_utils/glm_utils.hpp");
+    // auto rel_glm_printing_path = fs_utils::get_relative_path(output_dir,
+    // "src/utility/glm_printing/glm_printing.hpp");
+
+    // output_collection.includes_required_for_definition = {
+    //     "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
+    //     "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
+    //     "#include \"" + std::string(rel_glm_utils_path) + "\"",
+    //     "#include \"" + std::string(rel_glm_printing_path) + "\"", meta_utils::regex_include};
 
     output_collection.includes_required_for_definition = {
         "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
         "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
-        "#include \"" + std::string(rel_glm_utils_path) + "\"",
-        "#include \"" + std::string(rel_glm_printing_path) + "\"", meta_utils::regex_include};
+        meta_utils::regex_include};
 
     auto string_invokers = generate_string_invokers(input_collection.functions);
 
     output_collection.variables = generate_meta_function_signature_variables(input_collection.functions);
+    collection_utils::for_each_in_vector(output_collection.variables,
+                                         [&](MetaVariable &mv) { mv.name_space = output_collection.name_space; });
 
     if (create_type_grouped_invokers) {
         auto type_grouped_invokers = generate_type_grouped_invokers(input_collection.functions);
@@ -691,7 +721,7 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
 
         auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(
             input_collection.functions, "std::string", "_string_invoker_to_string");
-        meta_utils::MetaFunction full_invoker(full_invoker_str);
+        meta_utils::MetaFunction full_invoker(full_invoker_str, output_collection.name_space);
         output_collection.add_function(full_invoker);
         output_collection.add_function(generate_interactive_invoker());
     }
@@ -734,7 +764,7 @@ std::vector<std::string> get_system_headers(const std::vector<std::string> &head
 MetaFunction generate_interactive_invoker() {
     // NOTE: one day I think we can remove the dep on available types
     MetaFunction interactive_invoker(R"(
-void start_interactive_invoker(std::vector<meta_utils::MetaType> available_types) {
+void start_interactive_invoker() {
     std::cout << "Enter function invocation strings (type 'quit' to exit):\n";
 
     std::string input;
@@ -745,7 +775,7 @@ void start_interactive_invoker(std::vector<meta_utils::MetaType> available_types
         if (input == "quit")
             break;
 
-        std::optional<std::string> result = invoker_that_returns_std_string(input, available_types);
+        std::optional<std::string> result = invoker_that_returns_std_string(input);
         if (result.has_value()) {
             std::cout << "Result: " << result.value() << "\n";
         } else {

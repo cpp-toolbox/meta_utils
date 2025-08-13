@@ -127,6 +127,8 @@ inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { ret
 inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\" || s == \"1\"; }",
                                 create_to_string_lambda("bool"), R"(true|false|1|0)");
 
+inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "", "", "MetaType");
+
 // GENERICS
 // NOTE: generic types cannot be defined directly as variables, there are
 // "infinitely" many types possible so we can't actually make variables for
@@ -145,7 +147,8 @@ inline MetaType construct_vector_metatype(MetaType generic_type) {
 };
 
 // NOTE: this is the only global state.
-inline std::vector<MetaType> concrete_types = {INT, UNSIGNED_INT, FLOAT, DOUBLE, SHORT, LONG, STRING, BOOL};
+inline std::vector<MetaType> concrete_types = {INT,  UNSIGNED_INT, FLOAT, DOUBLE,        SHORT,
+                                               LONG, STRING,       BOOL,  meta_type_type};
 
 inline std::unordered_map<std::string, std::function<MetaType(MetaType)>> generic_type_to_metatype_constructor = {
     {"std::vector", [](MetaType mt) -> MetaType { return construct_vector_metatype(mt); }}};
@@ -306,10 +309,16 @@ class MetaVariable {
   public:
     enum class InitStyle { Assignment, Definition };
 
+    MetaVariable(std::string type, std::string name, std::string value, InitStyle init_style = InitStyle::Assignment,
+                 std::string name_space = "")
+        : type(std::move(type)), name(std::move(name)), value(std::move(value)), init_style(std::move(init_style)),
+          name_space(std::move(name_space)) {}
+
     std::string type;
     std::string name;
     std::string value;
     InitStyle init_style = InitStyle::Assignment;
+    std::string name_space;
 
     std::string to_assignment() const { return type + " " + name + " = " + value + ";"; }
 
@@ -334,9 +343,6 @@ class MetaFunction {
         : signature(signature), body(body), name_space(name_space) {};
 
     MetaFunction(const std::string &func_str, const std::string &name_space = "") : name_space(name_space) {
-
-        std::cout << "MetaFunction" << std::endl;
-        std::cout << "func_str: " << func_str << std::endl;
 
         static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
 
