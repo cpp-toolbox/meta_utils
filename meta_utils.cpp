@@ -299,8 +299,10 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
     return function_invocation_regex;
 }
 
+// NOTE: this is an important function
 std::optional<MetaType> parse_meta_type_from_string(const std::string &type_str) {
 
+    // NOTE: using meta types here. so meta types must be defined first.
     auto concrete_type_name_to_meta_type = meta_types.get_concrete_type_name_to_meta_type();
 
     std::string s = clean_type_string(type_str);
@@ -436,7 +438,7 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
     text_utils::MultilineStringAccumulator msa;
 
     // NOTE: we use the camel case because sometimes we operate on constructors which are in camel case
-    msa.add("std::optional<", sig.return_type, "> ", text_utils::camel_to_snake_case(sig.name), func_postfix,
+    msa.add("std::optional<", sig.return_type, "> ", text_utils::pascal_to_snake_case(sig.name), func_postfix,
             "(const std::string &input) {");
     msa.add("    std::regex re(R\"(", function_invocation_regex, ")\");");
     msa.add("    std::smatch match;");
@@ -451,7 +453,7 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
     msa.add("");
 
     // call actual function
-    msa.add("    ", sig.return_type, " result = ", sig.get_fully_qualified_name(), "(",
+    msa.add("    ", sig.return_type, " result = ", get_fully_qualified_name(sig), "(",
             text_utils::join(call_to_actual_func_args, ", "), ");");
     msa.add("    return result;");
 
@@ -562,31 +564,40 @@ std::string generate_string_invoker_for_function_collection(std::vector<MetaFunc
 
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings) {
 
-    auto output_header_path = "src/string_invoker/string_invoker.hpp";
-    auto output_source_path = "src/string_invoker/string_invoker.cpp";
+    auto output_header_path = "src/meta_program/meta_program.hpp";
+    auto output_source_path = "src/meta_program/meta_program.cpp";
 
     std::filesystem::path output_header_dir = std::filesystem::path(output_header_path).parent_path();
 
-    std::unordered_map<std::string, std::vector<MetaFunction>> return_type_to_invokers_that_return_it;
+    // TODO: get rid of this
+    struct ObjectFunction {
+        std::string object_name;
+        MetaFunction function;
+    };
+    std::unordered_map<std::string, std::vector<ObjectFunction>> return_type_to_invokers_that_return_it;
 
     std::vector<std::string> header_paths_of_other_string_invokers;
 
-    std::vector<MetaFunctionCollection> generated_mfcs;
+    std::vector<MetaCodeCollection> generated_mccs;
 
     for (const auto &setting : settings) {
-        std::string invoker_path = fs_utils::get_containing_directory(setting.header_file_path) + "/string_invoker/" +
+        std::string invoker_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
                                    fs_utils::get_filename_from_path(setting.header_file_path);
         std::string rel_path = fs_utils::get_relative_path(output_header_dir, invoker_path);
         auto rel_include = "#include \"" + rel_path + "\"";
         header_paths_of_other_string_invokers.push_back(rel_include);
-        MetaFunctionCollection mfc = generate_string_invokers_from_header_and_source(setting);
-        generated_mfcs.push_back(mfc);
-        for (const auto &fun : mfc.functions) {
+        MetaCodeCollection mfc = generate_string_invokers_from_header_and_source(setting);
+        generated_mccs.push_back(mfc);
+        // WARN: huge assumption here.
+        MetaClass mc = mfc.classes.at(0);
+        for (const auto &meth : mc.methods) {
+            auto fun = meth.function;
             bool is_string_to_type_invoker = text_utils::starts_with(fun.signature.name, "invoker_that_returns");
-            // NOTE: this is a sketchy way of extracting the type with assumptions
+            // WARN: this is a sketchy way of extracting the type with assumptions
             std::string return_type = text_utils::replace_substring(fun.signature.name, "invoker_that_returns", "");
             if (is_string_to_type_invoker) {
-                return_type_to_invokers_that_return_it[return_type].push_back(fun);
+                return_type_to_invokers_that_return_it[return_type].push_back(
+                    {text_utils::pascal_to_snake_case(mc.name), fun});
             }
         }
     }
@@ -594,78 +605,110 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     // NOTE: now we want to collect all the functions that we can call, which is given by the input collection
     std::vector<MetaVariable> all_meta_function_signatures_from_sub_string_invokers =
         collection_utils::join_all_vectors(
-            collection_utils::map_vector(generated_mfcs, [](MetaFunctionCollection mfc) { return mfc.variables; }));
+            collection_utils::map_vector(generated_mccs, [](MetaCodeCollection mfc) { return mfc.variables; }));
 
-    MetaVariable vector_of_meta_function_signature_var_names(
-        "std::vector<meta_utils::MetaFunctionSignature>", "all_meta_function_signatures",
-        text_utils::surround(text_utils::join(collection_utils::map_vector(
-                                                  all_meta_function_signatures_from_sub_string_invokers,
-                                                  [](MetaVariable mv) {
-                                                      bool uses_namespace = mv.name_space != "";
-                                                      if (uses_namespace) {
-                                                          std::cout << "uses namespace" << std::endl;
-                                                      } else {
-                                                          std::cout << "doesn't uses namespace" << std::endl;
-                                                      }
-                                                      return (uses_namespace ? mv.name_space + "::" : "") + mv.name;
-                                                  }),
-                                              ", "),
-                             "{", "}"));
+    MetaCodeCollection top_level_invoker_mfc;
+    top_level_invoker_mfc.name = "meta_program";
+    top_level_invoker_mfc.name_space = "meta_program";
 
-    MetaFunctionCollection top_level_invoker_mfc;
-    top_level_invoker_mfc.name = "string_invoker";
-    top_level_invoker_mfc.name_space = "string_invoker";
-
-    top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
+    // top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
     top_level_invoker_mfc.includes_required_for_declaration = header_paths_of_other_string_invokers;
-    top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"string_invoker.hpp\"");
+    top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
 
-    for (const auto &[return_type, mfs] : return_type_to_invokers_that_return_it) {
+    meta_utils::MetaClass meta_class("MetaProgram");
+
+    for (const auto &[return_type, object_functions] : return_type_to_invokers_that_return_it) {
+        std::cout << "got in here epic" << std::endl;
         text_utils::MultilineStringAccumulator mla;
-        if (mfs.empty())
+        if (object_functions.empty())
             continue;
-        auto mf = mfs.at(0);
 
+        // NOTE: this pattern checks to see if empty, if empty then don't do anything, if
+        // none empty then declare it v
+        auto object_function = object_functions.at(0);
+        MetaFunction mf = object_function.function;
         mla.add(mf.signature.return_type, " val;");
-        for (const auto &mf : mfs) {
-            mla.add("val = ", mf.signature.get_fully_qualified_name(), "(invocation);");
+
+        // NOTE: then optionally try and run each possible one sequentially.
+        for (const auto &object_function : object_functions) {
+            auto mf = object_function.function;
+            mla.add("val = ", object_function.object_name + ".", mf.signature.name, "(invocation);");
             mla.add("if (val)");
             mla.add("    return val;");
             mla.add("");
         }
         mla.add("return std::nullopt;");
         MetaFunction top_level_mf(mf.signature, mla, "");
-        top_level_invoker_mfc.add_function(top_level_mf);
+        meta_class.add_method(MetaMethod(top_level_mf));
+        // top_level_invoker_mfc.add_function();
     }
 
-    top_level_invoker_mfc.write_to_header_and_source("src/string_invoker/string_invoker.hpp",
-                                                     "src/string_invoker/string_invoker.cpp");
+    MetaParameter vector_of_meta_types("std::vector<meta_utils::MetaType> concrete_types");
+    MetaConstructor mc(meta_class.name, {vector_of_meta_types}, "", AccessSpecifier::Public,
+                       {"concrete_types(concrete_types)"});
+    meta_class.constructors.push_back(mc);
+
+    MetaVariable concrete_types("std::vector<meta_utils::MetaType> ", "concrete_types", "");
+    MetaAttribute concrete_types_reference(concrete_types, AccessSpecifier::Public);
+    meta_class.add_attribute(concrete_types_reference);
+
+    for (const auto &mcc : generated_mccs) {
+        // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit sketchy
+        MetaClass mc = mcc.classes.at(0);
+
+        std::string var_name;
+        if (not mcc.name_space.empty()) {
+            var_name = mcc.name_space + "::" + mc.name;
+        } else {
+            var_name = mc.name;
+        }
+
+        MetaVariable mv(var_name, text_utils::pascal_to_snake_case(mc.name), "concrete_types",
+                        MetaVariable::InitStyle::Brace);
+        MetaAttribute ma(mv, AccessSpecifier::Public);
+        meta_class.add_attribute(ma);
+    }
+
+    top_level_invoker_mfc.classes.push_back(meta_class);
+
+    top_level_invoker_mfc.write_to_header_and_source(output_header_path, output_source_path);
 }
 
-MetaFunctionCollection
+MetaCodeCollection
 generate_string_invokers_from_header_and_source(const StringInvokerGenerationSettingsForHeaderSource &sigsfhs) {
     return generate_string_invokers_from_header_and_source(
         sigsfhs.header_file_path, sigsfhs.source_file_path, sigsfhs.create_top_level_invoker,
         sigsfhs.create_type_grouped_invokers, sigsfhs.string_signatures_for_potential_filtering, sigsfhs.mode);
 }
 
-MetaFunctionCollection generate_string_invokers_from_header_and_source(
+MetaCodeCollection generate_string_invokers_from_header_and_source(
     const std::string &input_header_path, const std::string &input_source_path, bool create_top_level_invoker,
     bool create_type_grouped_invokers, const std::vector<std::string> &string_signatures, FilterMode mode) {
 
-    const std::string output_name_prefix = "string_invoker_";
+    const std::string output_name_prefix = "meta_";
 
-    meta_utils::MetaFunctionCollection input_collection(input_header_path, input_source_path, string_signatures, mode);
+    meta_utils::MetaCodeCollection input_collection(input_header_path, input_source_path, string_signatures, mode);
 
-    meta_utils::MetaFunctionCollection output_collection;
+    meta_utils::MetaCodeCollection output_collection;
 
     bool input_collection_doesnt_use_namespace = input_collection.name_space == "";
-
     output_collection.name_space =
-        (input_collection_doesnt_use_namespace ? input_collection.name : input_collection.name_space) +
-        "_string_invokers";
+        output_name_prefix +
+        (input_collection_doesnt_use_namespace ? input_collection.name : input_collection.name_space);
     output_collection.name = output_name_prefix + input_collection.name;
+
+    auto class_name = text_utils::snake_to_pascal_case(output_name_prefix + input_collection.name);
+    meta_utils::MetaClass meta_class(class_name);
+    MetaParameter vector_of_meta_types("std::vector<meta_utils::MetaType> &concrete_types");
+    MetaConstructor mc(class_name, {vector_of_meta_types}, "", AccessSpecifier::Public,
+                       {"concrete_types(concrete_types)"});
+    meta_class.constructors.push_back(mc);
+
+    MetaVariable concrete_types("std::vector<meta_utils::MetaType> &", "concrete_types", "");
+    MetaAttribute concrete_types_reference(concrete_types, AccessSpecifier::Public);
+    meta_class.add_attribute(concrete_types_reference);
+
     output_collection.includes_required_for_declaration =
         get_system_headers(input_collection.includes_required_for_declaration);
 
@@ -673,7 +716,7 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
     output_collection.includes_required_for_declaration.push_back(meta_utils::optional_include);
 
     std::filesystem::path input_header_dir = std::filesystem::path(input_header_path).parent_path();
-    std::filesystem::path output_dir = input_header_dir / "string_invoker";
+    std::filesystem::path output_dir = input_header_dir / "meta";
 
     auto rel_path = fs_utils::get_relative_path(output_dir, "src/utility/meta_utils/meta_utils.hpp");
 
@@ -698,15 +741,34 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
 
     auto string_invokers = generate_string_invokers(input_collection.functions);
 
-    output_collection.variables = generate_meta_function_signature_variables(input_collection.functions);
-    collection_utils::for_each_in_vector(output_collection.variables,
-                                         [&](MetaVariable &mv) { mv.name_space = output_collection.name_space; });
+    auto meta_function_signature_variables = generate_meta_function_signature_variables(input_collection.functions);
+    collection_utils::for_each_in_vector(meta_function_signature_variables, [&](MetaVariable &mv) {
+        mv.name_space = output_collection.name_space;
+        mv.init_style = MetaVariable::InitStyle::Brace;
+    });
+    collection_utils::for_each_in_vector(meta_function_signature_variables, [&](MetaVariable &mv) {
+        meta_class.add_attribute(MetaAttribute(mv, AccessSpecifier::Public));
+    });
+
+    MetaVariable all_meta_function_signatures_vector(
+        "std::vector<meta_utils::MetaFunctionSignature>", "all_meta_function_signatures",
+        text_utils::surround(text_utils::join(collection_utils::map_vector(meta_function_signature_variables,
+                                                                           [](MetaVariable mv) { return mv.name; }),
+                                              ", "),
+                             text_utils::left_brace, text_utils::right_brace),
+        MetaVariable::InitStyle::Assignment);
+
+    meta_class.add_attribute(MetaAttribute(all_meta_function_signatures_vector, AccessSpecifier::Public));
+
+    // output_collection.variables = generate_meta_function_signature_variables(input_collection.functions);
 
     if (create_type_grouped_invokers) {
         auto type_grouped_invokers = generate_type_grouped_invokers(input_collection.functions);
         for (const auto &type_grouped_invoker : type_grouped_invokers) {
             meta_utils::MetaFunction full_invoker(type_grouped_invoker, output_collection.name_space);
-            output_collection.add_function(full_invoker);
+            meta_utils::MetaMethod method(full_invoker);
+            // output_collection.add_function(full_invoker);
+            meta_class.add_method(method);
         }
     }
 
@@ -722,18 +784,22 @@ MetaFunctionCollection generate_string_invokers_from_header_and_source(
         auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(
             input_collection.functions, "std::string", "_string_invoker_to_string");
         meta_utils::MetaFunction full_invoker(full_invoker_str, output_collection.name_space);
-        output_collection.add_function(full_invoker);
-        output_collection.add_function(generate_interactive_invoker());
+        meta_class.add_method(MetaMethod(full_invoker));
+        meta_class.add_method(MetaMethod(generate_interactive_invoker()));
+        // output_collection.add_function(full_invoker);
+        // output_collection.add_function(generate_interactive_invoker());
     }
 
     for (const auto &si : all_needed_functions) {
-        output_collection.add_function(si);
+        meta_class.add_method(MetaMethod(si));
+        // output_collection.add_function(si);
     }
 
     std::string base_filename = std::filesystem::path(input_header_path).stem().string();
     std::filesystem::path output_header = output_dir / (base_filename + ".hpp");
     std::filesystem::path output_source = output_dir / (base_filename + ".cpp");
 
+    output_collection.classes.push_back(meta_class);
     output_collection.write_to_header_and_source(output_header, output_source);
 
     std::cout << "Generated files written to " << output_dir << std::endl;

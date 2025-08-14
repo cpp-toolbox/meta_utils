@@ -195,6 +195,19 @@ class MetaParameter {
 
 std::string generate_regex_to_match_valid_invocation_of_func(const std::string &signature);
 
+template <typename T>
+concept HasNameAndNamespace = requires(T a) {
+    { a.name } -> std::same_as<std::string &>;
+    { a.name_space } -> std::same_as<std::string &>;
+};
+
+template <HasNameAndNamespace T> std::string get_fully_qualified_name(const T &obj) {
+    if (!obj.name_space.empty()) {
+        return obj.name_space + "::" + obj.name;
+    }
+    return obj.name;
+}
+
 class MetaFunctionSignature {
   public:
     std::string name;
@@ -203,13 +216,6 @@ class MetaFunctionSignature {
     std::vector<MetaParameter> parameters;
     std::string invocation_regex;
     std::string name_space;
-
-    std::string get_fully_qualified_name() const {
-        if (!name_space.empty()) {
-            return name_space + "::" + name;
-        }
-        return name;
-    }
 
     bool operator==(const MetaFunctionSignature &other) const {
         return name == other.name && parameters == other.parameters;
@@ -236,7 +242,7 @@ class MetaFunctionSignature {
                                             "'ReturnType name(Type1 x, Type2 y)' or a constructor");
             } else { // constructor
                 name = match[1];
-                return_type = get_fully_qualified_name();
+                return_type = get_fully_qualified_name(*this);
                 param_list = match[2];
             }
         } else { // regular function
@@ -307,7 +313,7 @@ class MetaFunctionSignature {
 
 class MetaVariable {
   public:
-    enum class InitStyle { Assignment, Definition };
+    enum class InitStyle { Assignment, Definition, Brace };
 
     MetaVariable(std::string type, std::string name, std::string value, InitStyle init_style = InitStyle::Assignment,
                  std::string name_space = "")
@@ -324,11 +330,18 @@ class MetaVariable {
 
     std::string to_definition() const { return type + " " + name + "(" + value + ");"; }
 
+    std::string to_brace() const { return type + " " + name + "{" + value + "};"; }
+
     std::string to_initialization() const {
-        if (init_style == InitStyle::Assignment)
+        switch (init_style) {
+        case InitStyle::Assignment:
             return to_assignment();
-        else
+        case InitStyle::Definition:
             return to_definition();
+        case InitStyle::Brace:
+            return to_brace();
+        }
+        return {};
     }
 };
 
@@ -338,6 +351,7 @@ class MetaFunction {
     text_utils::MultilineStringAccumulator body;
     std::string name_space;
 
+    MetaFunction() {};
     MetaFunction(MetaFunctionSignature signature, text_utils::MultilineStringAccumulator body,
                  std::string name_space = "")
         : signature(signature), body(body), name_space(name_space) {};
@@ -404,30 +418,287 @@ class MetaFunction {
     }
 };
 
+enum class AccessSpecifier { Public, Protected, Private };
+
+inline std::string to_string(AccessSpecifier access) {
+    switch (access) {
+    case AccessSpecifier::Public:
+        return "public";
+    case AccessSpecifier::Protected:
+        return "protected";
+    case AccessSpecifier::Private:
+        return "private";
+    }
+    return {};
+}
+
+class MetaAttribute {
+  public:
+    MetaVariable variable;
+    AccessSpecifier access = AccessSpecifier::Private;
+    bool is_static = false;
+    bool is_const = false;
+
+    MetaAttribute(MetaVariable variable, AccessSpecifier access = AccessSpecifier::Private, bool is_static = false,
+                  bool is_const = false)
+        : variable(std::move(variable)), access(access), is_static(is_static), is_const(is_const) {}
+
+    std::string to_string() const {
+        std::ostringstream oss;
+        oss << meta_utils::to_string(access) << ":\n";
+        oss << (is_static ? "static " : "");
+        oss << (is_const ? "const " : "");
+        oss << variable.to_initialization();
+        return oss.str();
+    }
+};
+
+class MetaMethod {
+  public:
+    MetaFunction function;
+    AccessSpecifier access = AccessSpecifier::Public;
+    bool is_static = false;
+    bool is_virtual = false;
+    bool is_const = false;
+    bool is_override = false;
+
+    MetaMethod() {};
+    MetaMethod(MetaFunction function, AccessSpecifier access = AccessSpecifier::Public, bool is_static = false,
+               bool is_virtual = false, bool is_const = false, bool is_override = false)
+        : function(std::move(function)), access(access), is_static(is_static), is_virtual(is_virtual),
+          is_const(is_const), is_override(is_override) {}
+
+    std::string to_string() const {
+        std::ostringstream oss;
+        oss << meta_utils::to_string(access) << ":\n";
+
+        if (is_static)
+            oss << "static ";
+        if (is_virtual)
+            oss << "virtual ";
+
+        // Normal function signature
+        oss << function.signature.return_type << " ";
+        if (!function.name_space.empty()) {
+            oss << function.name_space << "::";
+        }
+        oss << function.signature.name << "(";
+        for (size_t i = 0; i < function.signature.parameters.size(); ++i) {
+            const auto &param = function.signature.parameters[i];
+            oss << param.type.get_type_name() << " " << param.name;
+            if (i + 1 < function.signature.parameters.size())
+                oss << ", ";
+        }
+        oss << ")";
+        if (is_const)
+            oss << " const";
+        if (is_override)
+            oss << " override";
+
+        oss << " {\n" << function.body.str() << "\n}";
+
+        return oss.str();
+    }
+};
+
+class MetaConstructor {
+  public:
+    std::string class_name; // store the class name
+    std::vector<MetaParameter> parameters;
+    std::vector<std::string> initializer_list;
+    text_utils::MultilineStringAccumulator body;
+    AccessSpecifier access = AccessSpecifier::Public;
+
+    MetaConstructor() = default;
+
+    // Updated constructor takes the class name
+    MetaConstructor(const std::string &class_name, const std::vector<MetaParameter> &params,
+                    const std::string &body_str, AccessSpecifier access = AccessSpecifier::Public,
+                    const std::vector<std::string> &init_list = {})
+        : class_name(class_name), parameters(params), initializer_list(init_list), access(access) {
+        body.add_multiline(body_str);
+    }
+
+    // to_string no longer needs class_name as input
+    std::string to_string(size_t indent_level = 1) const {
+        std::ostringstream oss;
+        std::string pad(indent_level * 4, ' '); // 4 spaces per indent level
+
+        // Constructor signature
+        oss << pad << class_name << "(";
+        for (size_t i = 0; i < parameters.size(); ++i) {
+            const auto &param = parameters[i];
+            oss << param.type.get_type_name() << " " << param.name;
+            if (i + 1 < parameters.size())
+                oss << ", ";
+        }
+        oss << ")";
+
+        // Initializer list
+        if (!initializer_list.empty()) {
+            oss << " : ";
+            for (size_t i = 0; i < initializer_list.size(); ++i) {
+                oss << initializer_list[i];
+                if (i + 1 < initializer_list.size())
+                    oss << ", ";
+            }
+        }
+
+        // Body
+        oss << " {\n" << text_utils::indent(body.str(), indent_level + 1) << pad << "}\n";
+        return oss.str();
+    }
+};
+
+class MetaClass {
+  public:
+    std::string name;
+    std::string name_space;
+    bool is_final = false;
+
+    std::vector<MetaAttribute> attributes;
+    std::vector<MetaConstructor> constructors;
+    std::vector<MetaMethod> methods;
+
+    MetaClass(std::string name, std::string name_space = "", bool is_final = false)
+        : name(std::move(name)), name_space(std::move(name_space)), is_final(is_final) {}
+
+    void add_attribute(const MetaAttribute &attr) { attributes.push_back(attr); }
+    void add_method(const MetaMethod &method) { methods.push_back(method); }
+
+    std::string to_string() const {
+        std::ostringstream oss;
+
+        // Namespace
+        if (!name_space.empty()) {
+            oss << "namespace " << name_space << " {\n";
+        }
+
+        // Class header
+        oss << "class " << name;
+        if (is_final) {
+            oss << " final";
+        }
+        oss << " {\n";
+
+        if (!constructors.empty()) {
+            oss << "public:\n";
+            for (const auto &ctor : constructors) {
+                oss << text_utils::indent(ctor.to_string(), 1); // using the indent_text function
+            }
+            oss << "\n";
+        }
+
+        output_section(oss, AccessSpecifier::Public, attributes, methods);
+        output_section(oss, AccessSpecifier::Protected, attributes, methods);
+        output_section(oss, AccessSpecifier::Private, attributes, methods);
+
+        oss << "};\n";
+
+        if (!name_space.empty()) {
+            oss << "} // namespace " << name_space << "\n";
+        }
+
+        return oss.str();
+    }
+
+  private:
+    static void output_section(std::ostringstream &oss, AccessSpecifier section,
+                               const std::vector<MetaAttribute> &attrs, const std::vector<MetaMethod> &meths) {
+        bool has_content = false;
+
+        for (const auto &a : attrs)
+            if (a.access == section) {
+                has_content = true;
+                break;
+            }
+        if (!has_content) {
+            for (const auto &m : meths)
+                if (m.access == section) {
+                    has_content = true;
+                    break;
+                }
+        }
+
+        if (!has_content)
+            return;
+
+        oss << meta_utils::to_string(section) << ":\n";
+
+        for (const auto &attr : attrs) {
+            if (attr.access == section) {
+                oss << "    " << (attr.is_static ? "static " : "") << (attr.is_const ? "const " : "");
+
+                if (!attr.variable.value.empty()) {
+                    oss << attr.variable.to_initialization();
+                } else {
+                    oss << attr.variable.type << " " << attr.variable.name << ";";
+                }
+
+                oss << "\n";
+            }
+        }
+
+        for (const auto &method : meths) {
+            if (method.access == section) {
+                oss << "    ";
+                if (method.is_static)
+                    oss << "static ";
+                if (method.is_virtual)
+                    oss << "virtual ";
+
+                // constructor special case: no return type
+                if (!method.function.signature.return_type.empty())
+                    oss << method.function.signature.return_type << " ";
+
+                oss << method.function.signature.name << "(";
+
+                for (size_t i = 0; i < method.function.signature.parameters.size(); ++i) {
+                    const auto &param = method.function.signature.parameters[i];
+                    oss << param.type.get_type_name() << " " << param.name;
+                    if (i + 1 < method.function.signature.parameters.size()) {
+                        oss << ", ";
+                    }
+                }
+
+                oss << ")";
+                if (method.is_const)
+                    oss << " const";
+                if (method.is_override)
+                    oss << " override";
+
+                oss << " {\n" << text_utils::indent(method.function.body.str(), 2) << "\n    }\n";
+            }
+        }
+    }
+};
+
 enum class FilterMode { None, Whitelist, Blacklist };
 
 bool is_system_header(const std::string &line);
 bool is_local_header(const std::string &line);
 std::vector<std::string> get_system_headers(const std::vector<std::string> &headers);
 
-class MetaFunctionCollection {
+// NOTE: this encompasses a header+source file usually
+class MetaCodeCollection {
   public:
     std::string name; // used for ifndef guards
     std::vector<MetaFunction> functions;
     std::vector<MetaVariable> variables;
+    std::vector<MetaClass> classes;
     std::vector<std::string> includes_required_for_declaration;
     std::vector<std::string> includes_required_for_definition;
     std::string name_space;
 
-    MetaFunctionCollection() = default;
+    MetaCodeCollection() = default;
 
     void add_function(MetaFunction mf) {
         mf.name_space = name_space;
         functions.push_back(std::move(mf));
     }
 
-    MetaFunctionCollection(const std::string &header_file_path, const std::string &cpp_file_path,
-                           const std::vector<std::string> &string_signatures = {}, FilterMode mode = FilterMode::None) {
+    MetaCodeCollection(const std::string &header_file_path, const std::string &cpp_file_path,
+                       const std::vector<std::string> &string_signatures = {}, FilterMode mode = FilterMode::None) {
 
         std::string header_source = read_file(header_file_path);
         std::string cpp_source = read_file(cpp_file_path);
@@ -481,6 +752,10 @@ class MetaFunctionCollection {
         }
 
         oss << "\n";
+
+        for (const auto &cls : classes) {
+            oss << cls.to_string() << "\n\n";
+        }
 
         for (const auto &func : functions) {
             oss << func.signature.return_type << " " << func.signature.name << "(";
@@ -669,16 +944,17 @@ struct StringInvokerGenerationSettingsForHeaderSource {
 
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings);
 
-MetaFunctionCollection
+MetaCodeCollection
 generate_string_invokers_from_header_and_source(const StringInvokerGenerationSettingsForHeaderSource &sigsfhs);
 
-MetaFunctionCollection generate_string_invokers_from_header_and_source(
+MetaCodeCollection generate_string_invokers_from_header_and_source(
     const std::string &input_header_path, const std::string &input_source_path, bool create_top_level_invoker = false,
     bool create_type_grouped_invokers = false, const std::vector<std::string> &string_signatures = {},
     FilterMode mode = FilterMode::None);
 
 MetaFunction generate_interactive_invoker();
 
+// TODO: this is the meta program thing that we have to pass in at the top level
 class MetaTypes {
   private:
     std::vector<MetaType> concrete_types = meta_utils::concrete_types;
@@ -701,6 +977,7 @@ class MetaTypes {
     }
 };
 
+// TODO: remove this?
 inline MetaTypes meta_types;
 
 }; // namespace meta_utils
