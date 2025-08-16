@@ -7,6 +7,8 @@
 
 namespace meta_utils {
 
+std::string create_local_include(const std::string &path) { return "#include \"" + path + "\""; };
+
 MetaParameter::MetaParameter(const std::string &input) {
 
     // Match:
@@ -302,7 +304,7 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
 // NOTE: this is an important function
 std::optional<MetaType> parse_meta_type_from_string(const std::string &type_str) {
 
-    // NOTE: using meta types here. so meta types must be defined first.
+    // NOTE: using meta types here. so meta types must be defined first. REALLY BAD...
     auto concrete_type_name_to_meta_type = meta_types.get_concrete_type_name_to_meta_type();
 
     std::string s = clean_type_string(type_str);
@@ -614,6 +616,9 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     // top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
     top_level_invoker_mfc.includes_required_for_declaration = header_paths_of_other_string_invokers;
+    top_level_invoker_mfc.includes_required_for_declaration.push_back(optional_include);
+    top_level_invoker_mfc.includes_required_for_declaration.push_back(
+        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp")));
     top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
 
     meta_utils::MetaClass meta_class("MetaProgram");
@@ -718,26 +723,23 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     std::filesystem::path input_header_dir = std::filesystem::path(input_header_path).parent_path();
     std::filesystem::path output_dir = input_header_dir / "meta";
 
-    auto rel_path = fs_utils::get_relative_path(output_dir, "src/utility/meta_utils/meta_utils.hpp");
+    auto meta_utils_rel_path = fs_utils::get_relative_path(output_dir, "src/utility/meta_utils/meta_utils.hpp");
 
-    output_collection.includes_required_for_declaration.push_back("#include \"" + std::string(rel_path) + "\"");
-    output_collection.includes_required_for_declaration.push_back(
-        "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"");
+    auto rel_glm_utils_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_utils/glm_utils.hpp");
+    auto rel_glm_printing_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_printing/glm_printing.hpp");
 
-    // auto rel_glm_utils_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_utils/glm_utils.hpp");
-    // auto rel_glm_printing_path = fs_utils::get_relative_path(output_dir,
-    // "src/utility/glm_printing/glm_printing.hpp");
+    output_collection.includes_required_for_declaration = {
+        create_local_include(meta_utils_rel_path),
+        "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
+        "#include \"" + std::string(rel_glm_utils_path) + "\"",
+        "#include \"" + std::string(rel_glm_printing_path) + "\"",
+        meta_utils::regex_include,
+        meta_utils::optional_include};
 
     // output_collection.includes_required_for_definition = {
     //     "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
     //     "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
-    //     "#include \"" + std::string(rel_glm_utils_path) + "\"",
-    //     "#include \"" + std::string(rel_glm_printing_path) + "\"", meta_utils::regex_include};
-
-    output_collection.includes_required_for_definition = {
-        "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
-        "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
-        meta_utils::regex_include};
+    //     meta_utils::regex_include};
 
     auto string_invokers = generate_string_invokers(input_collection.functions);
 
