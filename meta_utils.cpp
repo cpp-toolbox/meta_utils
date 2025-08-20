@@ -441,10 +441,10 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
 
     // NOTE: we use the camel case because sometimes we operate on constructors which are in camel case
     msa.add("std::optional<", sig.return_type, "> ", text_utils::pascal_to_snake_case(sig.name), func_postfix,
-            "(const std::string &input) {");
+            "(const std::string &invocation) {");
     msa.add("    std::regex re(R\"(", function_invocation_regex, ")\");");
     msa.add("    std::smatch match;");
-    msa.add("    if (!std::regex_match(input, match, re)) return std::nullopt;");
+    msa.add("    if (!std::regex_match(invocation, match, re)) return std::nullopt;");
     msa.add("");
 
     for (size_t i = 0; i < arg_to_var_conversions.size(); ++i) {
@@ -564,6 +564,100 @@ std::string generate_string_invoker_for_function_collection(std::vector<MetaFunc
     return oss.str();
 }
 
+MetaFunction create_interactive_invoker() {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("void start_interactive_invoker() {");
+
+    msa.add("std::map<std::string, meta_utils::MetaFunctionSignature> options_dict;");
+    // TODO: fix hardcode here
+    msa.add("    for (size_t i = 0; i < meta_text_utils.all_meta_function_signatures.size(); ++i) {");
+    msa.add("    options_dict[std::to_string(i + 1)] = meta_text_utils.all_meta_function_signatures[i];");
+    msa.add("}");
+
+    msa.add("if (options_dict.empty()) {");
+    msa.add("    std::cout << \"No functions available.\" << std::endl;");
+    msa.add("    return; // nothing to do");
+    msa.add("}");
+
+    msa.add("std::vector<std::pair<std::string, meta_utils::MetaFunctionSignature>> "
+            "sorted_options(options_dict.begin(), options_dict.end());");
+
+    msa.add("std::sort(sorted_options.begin(), sorted_options.end(), [](const auto &a, const auto &b) { return "
+            "std::stoi(a.first) < std::stoi(b.first); });");
+
+    msa.add("bool keep_running = true;");
+
+    msa.add("while (keep_running) {");
+    msa.add("    std::cout << \"Select a function to invoke:\" << std::endl;;");
+    msa.add("    for (const auto &[key, func] : sorted_options) {");
+    msa.add("        std::cout << key << \". \" << func.to_string() << std::endl;");
+    msa.add("    }");
+
+    msa.add("    std::cout << \"q. Quit\" << std::endl;");
+
+    msa.add("    std::string choice = get_validated_input( []() {");
+    msa.add("        std::cout << \"Enter choice: \";");
+    msa.add("        std::string s;");
+    msa.add("        std::getline(std::cin, s);");
+    msa.add("        return text_utils::trim(s);");
+    msa.add("    },");
+    msa.add("    [&](const std::string &input) { return input == \"q\" || options_dict.find(input) != "
+            "options_dict.end(); }, \"Invalid choice. Please try again.\");");
+
+    msa.add("    if (choice == \"q\") {");
+    msa.add("        std::cout << \"Goodbye.\" << std::endl;");
+    msa.add("        break;");
+    msa.add("}");
+
+    msa.add("    meta_utils::MetaFunctionSignature selected = options_dict[choice];");
+
+    msa.add("    std::vector<std::string> args;");
+    msa.add("    for (const auto &param : selected.parameters) {");
+    msa.add("        std::string val = get_input_with_default(\"Enter value for \" + param.name + \" (\" + "
+            "param.type.get_type_name() + \")\", \"0\");");
+    msa.add("        args.push_back(val);");
+    msa.add("    }");
+
+    msa.add("    std::string invocation = selected.name + \"(\";");
+    msa.add("    for (size_t i = 0; i < args.size(); ++i) {");
+    msa.add("        invocation += args[i];");
+    msa.add("        if (i < args.size() - 1) {");
+    msa.add("            invocation += \", \";");
+    msa.add("        }");
+    msa.add("    }");
+    msa.add("    invocation += \")\";");
+
+    msa.add("    auto result = invoker_that_returns_std_string(invocation);");
+    msa.add("    if (result.has_value()) {");
+    msa.add("        std::cout << \"Result: \" << result.value() << std::endl;");
+    msa.add("    } else {");
+    msa.add("        std::cout << \"Invocation failed.\" << std::endl;");
+    msa.add("    }");
+
+    msa.add("    std::string run_again = get_validated_input(");
+    msa.add("    []() {");
+    msa.add("        std::cout << \"Do you want to run another function? (y/n): \";");
+    msa.add("        std::string s;");
+    msa.add("        std::getline(std::cin, s);");
+    msa.add("        return text_utils::trim(s);");
+    msa.add("    },");
+    msa.add("    [](const std::string &input) { return input == \"y\" || input == \"n\"; }, \"Please enter 'y' or "
+            "'n'.\");");
+
+    msa.add("    if (run_again == \"n\") {");
+    msa.add("        keep_running = false;");
+    msa.add("        std::cout << \"Goodbye.\" << std::endl;");
+    msa.add("    }");
+
+    msa.add("}");
+    msa.add("}");
+
+    MetaFunction mf(msa.str());
+
+    return mf;
+}
+
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings) {
 
     auto output_header_path = "src/meta_program/meta_program.hpp";
@@ -615,11 +709,16 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     // top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
+    // NOTE: one day I want to automate includes, mfs don't need includes individual functions have includes required
+    // for declaration and definition and we pull from there
     top_level_invoker_mfc.includes_required_for_declaration = header_paths_of_other_string_invokers;
     top_level_invoker_mfc.includes_required_for_declaration.push_back(optional_include);
     top_level_invoker_mfc.includes_required_for_declaration.push_back(
         create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp")));
     top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
+
+    top_level_invoker_mfc.includes_required_for_declaration.push_back(
+        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp")));
 
     meta_utils::MetaClass meta_class("MetaProgram");
 
@@ -648,6 +747,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         meta_class.add_method(MetaMethod(top_level_mf));
         // top_level_invoker_mfc.add_function();
     }
+
+    meta_class.add_method(MetaMethod(create_interactive_invoker()));
 
     MetaParameter vector_of_meta_types("std::vector<meta_utils::MetaType> concrete_types");
     MetaConstructor mc(meta_class.name, {vector_of_meta_types}, "", AccessSpecifier::Public,
@@ -731,10 +832,9 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     output_collection.includes_required_for_declaration = {
         create_local_include(meta_utils_rel_path),
         "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
-        "#include \"" + std::string(rel_glm_utils_path) + "\"",
-        "#include \"" + std::string(rel_glm_printing_path) + "\"",
-        meta_utils::regex_include,
-        meta_utils::optional_include};
+        // "#include \"" + std::string(rel_glm_utils_path) + "\"",
+        // "#include \"" + std::string(rel_glm_printing_path) + "\"",
+        meta_utils::regex_include, meta_utils::optional_include};
 
     // output_collection.includes_required_for_definition = {
     //     "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
@@ -793,6 +893,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     }
 
     for (const auto &si : all_needed_functions) {
+        std::cout << "adding: " << si.signature.to_string() << std::endl;
         meta_class.add_method(MetaMethod(si));
         // output_collection.add_function(si);
     }

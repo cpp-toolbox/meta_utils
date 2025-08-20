@@ -121,7 +121,8 @@ inline MetaType FLOAT = MetaType("float", "[](const std::string &s) { return std
 inline MetaType DOUBLE = MetaType("double", "[](const std::string &s) { return std::stod(s); }",
                                   create_to_string_lambda("double"), regex_utils::float_regex);
 
-inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { return s; }",
+// NOTE: the regex matches strings with their surrounding quotes, so in the conversion function strip them off
+inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { return s.substr(1, s.size() - 2); }",
                                   "[](const std::string &s) { return s; }", regex_utils::string_literal);
 
 inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\" || s == \"1\"; }",
@@ -564,7 +565,18 @@ class MetaClass {
         : name(std::move(name)), name_space(std::move(name_space)), is_final(is_final) {}
 
     void add_attribute(const MetaAttribute &attr) { attributes.push_back(attr); }
-    void add_method(const MetaMethod &method) { methods.push_back(method); }
+    void add_method(const MetaMethod &method) {
+        auto sig_str = method.function.signature.to_string();
+
+        // check if we already have this signature
+        for (const auto &m : methods) {
+            if (m.function.signature.to_string() == sig_str) {
+                return; // duplicate → do nothing
+            }
+        }
+
+        methods.push_back(method);
+    }
 
     std::string to_string() const {
         std::ostringstream oss;
