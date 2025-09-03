@@ -358,7 +358,7 @@ class MetaFunction {
 
     MetaFunction(const std::string &func_str, const std::string &name_space = "") : name_space(name_space) {
 
-        static const std::regex function_regex(R"(([\w:<>]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
+        static const std::regex function_regex(R"(([\w:<>()]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
 
         std::smatch match;
         if (!std::regex_search(func_str, match, function_regex)) {
@@ -918,11 +918,24 @@ inline std::string regex_include = "#include <regex>";
 
 std::string generate_string_invoker_for_function_with_string_return_type(const MetaFunctionSignature &sig);
 
+struct StringToTypeConversions {
+    std::vector<std::string> lambda_conversions;
+    std::vector<std::string> arg_to_var_conversions;
+    std::vector<std::string> arguments_to_final_func_call;
+};
+
 std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig,
                                                  const std ::string &func_postfix = "_string_invoker");
 
-std::string generate_string_invoker_for_function_collection(std::vector<MetaFunction> mfs_with_same_return_type,
-                                                            std::string return_type, std::string func_postfix);
+std::string
+generate_deferred_string_invoker_for_function(const MetaFunctionSignature &sig,
+                                              const std ::string &func_postfix = "_deferred_string_invoker");
+
+std::string generate_string_invoker_for_function_collection_that_has_same_return_type(
+    std::vector<MetaFunction> mfs_with_same_return_type, std::string return_type, std::string func_postfix);
+
+std::string generate_deferred_string_invoker_for_function_collection_that_has_same_return_type(
+    std::vector<MetaFunction> mfs_with_same_return_type, std::string return_type, std::string func_postfix);
 
 struct StringInvokerGenerationSettingsForHeaderSource {
     StringInvokerGenerationSettingsForHeaderSource(

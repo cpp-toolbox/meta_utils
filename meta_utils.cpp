@@ -245,6 +245,7 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
         std::regex re(regex_utils::constructor_signature_re);
         if (!std::regex_match(signature, match, re)) {
 
+            std::cout << signature << std::endl;
             throw std::invalid_argument("Invalid function or constructor signature");
         } else { // we have a constructor
 
@@ -407,17 +408,12 @@ std::string generate_string_invoker_for_function_with_string_return_type(const M
     return msa.str();
 }
 
-std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig, const std ::string &func_postfix) {
-    const auto &params = sig.parameters;
-
+StringToTypeConversions get_code_to_generate_invocation(const std::vector<MetaParameter> &params) {
     std::vector<std::string> lambda_conversions;
     std::vector<std::string> arg_to_var_conversions;
-    std::vector<std::string> call_to_actual_func_args;
-
+    std::vector<std::string> arguments_to_final_func_call;
     for (size_t i = 0; i < params.size(); i++) {
         const auto &param = params[i];
-        const std::string &typ = param.type.get_type_name();
-        const std::string &name = param.name;
         int group_num = static_cast<int>(i + 1);
 
         const std::string &string_to_type_func = param.type.string_to_type_func;
@@ -428,12 +424,20 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
         // TODO: in the future we don't want to return optionals I believe, also this is a bad way of doing it
         bool returns_optional = text_utils::contains(string_to_type_func, "std::optional");
 
-        std::string variable_assignment = "    " + typ + " " + name + " = " + conversion_func_name + "(match[" +
-                                          std::to_string(group_num) + "])" + (returns_optional ? ".value()" : "") + ";";
+        std::string variable_assignment = "    " + param.type.get_type_name() + " " + param.name + " = " +
+                                          conversion_func_name + "(match[" + std::to_string(group_num) + "])" +
+                                          (returns_optional ? ".value()" : "") + ";";
 
         arg_to_var_conversions.push_back(variable_assignment);
-        call_to_actual_func_args.push_back(name);
+        arguments_to_final_func_call.push_back(param.name);
     }
+    return {lambda_conversions, arg_to_var_conversions, arguments_to_final_func_call};
+}
+
+std::string generate_string_invoker_for_function(const MetaFunctionSignature &sig, const std ::string &func_postfix) {
+    const auto &params = sig.parameters;
+
+    auto code_to_generate_invocation = get_code_to_generate_invocation(params);
 
     std::string function_invocation_regex = sig.invocation_regex;
 
@@ -447,17 +451,53 @@ std::string generate_string_invoker_for_function(const MetaFunctionSignature &si
     msa.add("    if (!std::regex_match(input, match, re)) return std::nullopt;");
     msa.add("");
 
-    for (size_t i = 0; i < arg_to_var_conversions.size(); ++i) {
-        msa.add(lambda_conversions[i]);
-        msa.add(arg_to_var_conversions[i]);
+    for (size_t i = 0; i < code_to_generate_invocation.arg_to_var_conversions.size(); ++i) {
+        msa.add(code_to_generate_invocation.lambda_conversions[i]);
+        msa.add(code_to_generate_invocation.arg_to_var_conversions[i]);
     }
 
     msa.add("");
 
     // call actual function
     msa.add("    ", sig.return_type, " result = ", get_fully_qualified_name(sig), "(",
-            text_utils::join(call_to_actual_func_args, ", "), ");");
+            text_utils::join(code_to_generate_invocation.arguments_to_final_func_call, ", "), ");");
     msa.add("    return result;");
+
+    msa.add("}");
+    return msa.str();
+}
+
+std::string generate_deferred_string_invoker_for_function(const MetaFunctionSignature &sig,
+                                                          const std ::string &func_postfix) {
+    const auto &params = sig.parameters;
+
+    auto code_to_generate_invocation = get_code_to_generate_invocation(params);
+
+    std::string function_invocation_regex = sig.invocation_regex;
+
+    text_utils::MultilineStringAccumulator msa;
+
+    // NOTE: we use the camel case because sometimes we operate on constructors which are in camel case
+    msa.add("std::optional<std::function<", sig.return_type, "()>> ", text_utils::pascal_to_snake_case(sig.name),
+            func_postfix, "(const std::string &input) {");
+    msa.add("    std::regex re(R\"(", function_invocation_regex, ")\");");
+    msa.add("    std::smatch match;");
+    msa.add("    if (!std::regex_match(input, match, re)) return std::nullopt;");
+    msa.add("");
+
+    for (size_t i = 0; i < code_to_generate_invocation.arg_to_var_conversions.size(); ++i) {
+        msa.add(code_to_generate_invocation.lambda_conversions[i]);
+        msa.add(code_to_generate_invocation.arg_to_var_conversions[i]);
+    }
+
+    msa.add("");
+
+    msa.add("auto deferred_func = [=]() {");
+    msa.add("    ", "return ", get_fully_qualified_name(sig), "(",
+            text_utils::join(code_to_generate_invocation.arguments_to_final_func_call, ", "), ");");
+    msa.add("};");
+
+    msa.add("    return deferred_func;");
 
     msa.add("}");
     return msa.str();
@@ -511,7 +551,15 @@ std::vector<MetaFunction> generate_string_invokers(std::vector<MetaFunction> mfs
     for (const auto &mf : mfs) {
         auto invoker_str = meta_utils::generate_string_invoker_for_function(mf.signature);
         meta_utils::MetaFunction invoker(invoker_str);
+
         new_mfs.push_back(invoker);
+
+        // TODO: move elsewhere in future
+
+        auto deferred_invoker_str = meta_utils::generate_deferred_string_invoker_for_function(mf.signature);
+        meta_utils::MetaFunction deferred_invoker(deferred_invoker_str);
+
+        new_mfs.push_back(deferred_invoker);
     }
 
     return new_mfs;
@@ -526,9 +574,14 @@ std::vector<std::string> generate_type_grouped_invokers(const std::vector<meta_u
 
     std::vector<std::string> type_grouped_invokers;
     for (const auto &[return_type, funcs] : return_type_to_funcs) {
+        type_grouped_invokers.push_back(generate_string_invoker_for_function_collection_that_has_same_return_type(
+            funcs, return_type, "_string_invoker"));
         type_grouped_invokers.push_back(
-            generate_string_invoker_for_function_collection(funcs, return_type, "_string_invoker"));
+            generate_deferred_string_invoker_for_function_collection_that_has_same_return_type(
+                funcs, return_type, "_deferred_string_invoker"));
     }
+
+    // NEW: we also generate deferred invokers this way
 
     return type_grouped_invokers;
 }
@@ -541,12 +594,34 @@ std::string sanitize_type(const std::string &type_str) {
     return fixed;
 }
 
-// we operate under the assumption that every function in the collection has the same return type.
-std::string generate_string_invoker_for_function_collection(std::vector<MetaFunction> mfs_with_same_return_type,
-                                                            std::string return_type, std::string func_postfix) {
+std::string generate_string_invoker_for_function_collection_that_has_same_return_type(
+    std::vector<MetaFunction> mfs_with_same_return_type, std::string return_type, std::string func_postfix) {
     std::ostringstream oss;
 
     oss << "std::optional<" << return_type << "> invoker_that_returns_" << sanitize_type(return_type)
+        << "(const std::string &invocation) "
+           "{\n\n";
+
+    // Generate if-else chain for invocation matching
+    for (const auto &func : mfs_with_same_return_type) {
+        oss << "    if (std::regex_match(invocation, std::regex(mfs_" << func.signature.name
+            << ".invocation_regex))) {\n";
+        oss << "        return " << func.signature.name << func_postfix << "(invocation);\n";
+        oss << "    }\n";
+    }
+
+    oss << "\n    return std::nullopt;\n";
+    oss << "}\n";
+
+    return oss.str();
+}
+
+std::string generate_deferred_string_invoker_for_function_collection_that_has_same_return_type(
+    std::vector<MetaFunction> mfs_with_same_return_type, std::string return_type, std::string func_postfix) {
+    std::ostringstream oss;
+
+    oss << "std::optional<std::function<" << return_type << "()>> deferred_invoker_that_returns_"
+        << sanitize_type(return_type)
         << "(const std::string &invocation) "
            "{\n\n";
 
@@ -571,35 +646,54 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     std::filesystem::path output_header_dir = std::filesystem::path(output_header_path).parent_path();
 
-    // TODO: get rid of this
+    // TODO: replace this with an attribute
+    // we need this because the metaprogram stores a an object for each source header pair meta function collection
     struct ObjectFunction {
         std::string object_name;
         MetaFunction function;
     };
     std::unordered_map<std::string, std::vector<ObjectFunction>> return_type_to_invokers_that_return_it;
+    std::unordered_map<std::string, std::vector<ObjectFunction>> return_type_to_deferred_invokers_that_return_it;
 
     std::vector<std::string> header_paths_of_other_string_invokers;
 
     std::vector<MetaCodeCollection> generated_mccs;
 
     for (const auto &setting : settings) {
-        std::string invoker_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
-                                   fs_utils::get_filename_from_path(setting.header_file_path);
-        std::string rel_path = fs_utils::get_relative_path(output_header_dir, invoker_path);
+        std::string meta_code_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
+                                     fs_utils::get_filename_from_path(setting.header_file_path);
+        std::string rel_path = fs_utils::get_relative_path(output_header_dir, meta_code_path);
         auto rel_include = "#include \"" + rel_path + "\"";
         header_paths_of_other_string_invokers.push_back(rel_include);
-        MetaCodeCollection mfc = generate_string_invokers_from_header_and_source(setting);
-        generated_mccs.push_back(mfc);
-        // WARN: huge assumption here.
-        MetaClass mc = mfc.classes.at(0);
-        for (const auto &meth : mc.methods) {
-            auto fun = meth.function;
+        MetaCodeCollection mfc_that_was_just_written = generate_string_invokers_from_header_and_source(setting);
+        generated_mccs.push_back(mfc_that_was_just_written);
+
+        // WARN: assuming each one has at least one class
+        MetaClass meta_class_for_source_header_pair = mfc_that_was_just_written.classes.at(0);
+
+        for (const auto &meta_method : meta_class_for_source_header_pair.methods) {
+            auto fun = meta_method.function;
+
+            std::cout << fun.signature.name << std::endl;
+
             bool is_string_to_type_invoker = text_utils::starts_with(fun.signature.name, "invoker_that_returns");
             // WARN: this is a sketchy way of extracting the type with assumptions
             std::string return_type = text_utils::replace_substring(fun.signature.name, "invoker_that_returns", "");
             if (is_string_to_type_invoker) {
+                std::cout << "adding invoker" << std::endl;
                 return_type_to_invokers_that_return_it[return_type].push_back(
-                    {text_utils::pascal_to_snake_case(mc.name), fun});
+                    {text_utils::pascal_to_snake_case(meta_class_for_source_header_pair.name), fun});
+            }
+
+            bool is_string_to_type_deferred_invoker =
+                text_utils::starts_with(fun.signature.name, "deferred_invoker_that_returns");
+            // WARN: this is a sketchy way of extracting the type with assumptions
+            std::string deferred_return_type =
+                text_utils::replace_substring(fun.signature.name, "deferred_invoker_that_returns", "");
+            if (is_string_to_type_deferred_invoker) {
+                std::cout << "adding deferred invoker" << std::endl;
+                return_type_to_deferred_invokers_that_return_it[deferred_return_type].push_back(
+                    {text_utils::pascal_to_snake_case(meta_class_for_source_header_pair.name), fun});
             }
         }
     }
@@ -623,31 +717,40 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     meta_utils::MetaClass meta_class("MetaProgram");
 
-    for (const auto &[return_type, object_functions] : return_type_to_invokers_that_return_it) {
-        std::cout << "got in here epic" << std::endl;
-        text_utils::MultilineStringAccumulator mla;
-        if (object_functions.empty())
-            continue;
+    auto create_func_that_sequentially_tries_funcs_that_return_opt =
+        [&](std::unordered_map<std::string, std::vector<ObjectFunction>> &return_type_to_invokers_that_return_it) {
+            for (const auto &[return_type, object_functions] : return_type_to_invokers_that_return_it) {
+                std::cout << "got in here epic with return type: " << return_type << std::endl;
+                if (object_functions.empty())
+                    continue;
 
-        // NOTE: this pattern checks to see if empty, if empty then don't do anything, if
-        // none empty then declare it v
-        auto object_function = object_functions.at(0);
-        MetaFunction mf = object_function.function;
-        mla.add(mf.signature.return_type, " val;");
+                // therefore we know that obj funs is non empty
 
-        // NOTE: then optionally try and run each possible one sequentially.
-        for (const auto &object_function : object_functions) {
-            auto mf = object_function.function;
-            mla.add("val = ", object_function.object_name + ".", mf.signature.name, "(invocation);");
-            mla.add("if (val)");
-            mla.add("    return val;");
-            mla.add("");
-        }
-        mla.add("return std::nullopt;");
-        MetaFunction top_level_mf(mf.signature, mla, "");
-        meta_class.add_method(MetaMethod(top_level_mf));
-        // top_level_invoker_mfc.add_function();
-    }
+                text_utils::MultilineStringAccumulator mla;
+
+                auto object_function = object_functions.at(0);
+                MetaFunction mf = object_function.function;
+
+                // declare the return value, this is why we need at least one
+                mla.add(mf.signature.return_type, " val;");
+
+                // NOTE: then optionally try and run each possible one sequentially.
+                for (const auto &object_function : object_functions) {
+                    auto mf = object_function.function;
+                    mla.add("val = ", object_function.object_name + ".", mf.signature.name, "(invocation);");
+                    mla.add("if (val)");
+                    mla.add("    return val;");
+                    mla.add("");
+                }
+                mla.add("return std::nullopt;");
+                MetaFunction top_level_mf(mf.signature, mla, "");
+                meta_class.add_method(MetaMethod(top_level_mf));
+                // top_level_invoker_mfc.add_function();
+            }
+        };
+
+    create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_invokers_that_return_it);
+    create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_deferred_invokers_that_return_it);
 
     MetaParameter vector_of_meta_types("std::vector<meta_utils::MetaType> concrete_types");
     MetaConstructor mc(meta_class.name, {vector_of_meta_types}, "", AccessSpecifier::Public,
@@ -659,7 +762,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     meta_class.add_attribute(concrete_types_reference);
 
     for (const auto &mcc : generated_mccs) {
-        // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit sketchy
+        // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit
+        // sketchy
         MetaClass mc = mcc.classes.at(0);
 
         std::string var_name;
@@ -731,10 +835,9 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     output_collection.includes_required_for_declaration = {
         create_local_include(meta_utils_rel_path),
         "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
-        "#include \"" + std::string(rel_glm_utils_path) + "\"",
-        "#include \"" + std::string(rel_glm_printing_path) + "\"",
-        meta_utils::regex_include,
-        meta_utils::optional_include};
+        // "#include \"" + std::string(rel_glm_utils_path) + "\"",
+        // "#include \"" + std::string(rel_glm_printing_path) + "\"",
+        meta_utils::regex_include, meta_utils::optional_include};
 
     // output_collection.includes_required_for_definition = {
     //     "#include \"" + std::filesystem::path(input_header_path).filename().string() + "\"",
@@ -783,7 +886,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
             all_needed_functions.push_back(inv);
         }
 
-        auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection(
+        auto full_invoker_str = meta_utils::generate_string_invoker_for_function_collection_that_has_same_return_type(
             input_collection.functions, "std::string", "_string_invoker_to_string");
         meta_utils::MetaFunction full_invoker(full_invoker_str, output_collection.name_space);
         meta_class.add_method(MetaMethod(full_invoker));
