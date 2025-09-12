@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,13 +18,41 @@
 
 namespace meta_utils {
 
+class MetaInclude {
+  public:
+    enum class Type { Local, System };
+
+    MetaInclude(std::string project_relative_path, Type type = Type::Local)
+        : path(std::move(project_relative_path)), type(type) {}
+
+    // Default: stringify relative to project root
+    std::string str(const std::filesystem::path &base = ".") const {
+        if (type == Type::System) {
+            return "#include <" + path + ">";
+        } else {
+            auto rel_path = std::filesystem::relative(std::filesystem::path(path), base);
+            return "#include \"" + rel_path.generic_string() + "\"";
+        }
+    }
+
+  private:
+    std::string path;
+    Type type;
+};
+
 // NOTE: we can't use MetaFunctions in here because we get a cyclic dependency
 class MetaType {
   public:
     std::string base_type_name;
-    std::string string_to_type_func;
-    std::string type_to_string_func;
+    std::string string_to_type_func_lambda;
+    std::string type_to_string_func_lambda;
+    std::string serialize_type_func_lambda;
+    std::string deserialize_type_func_lambda;
     std::string literal_regex;
+
+    std::vector<MetaInclude> includes_required;
+
+    bool variably_sized = false;
 
     // Optional pointer to underlying element type (e.g., for vector<T>)
     // also note that when something is generic, we talk about the version with
@@ -31,17 +60,24 @@ class MetaType {
     std::vector<MetaType> element_types;
 
     bool operator==(const MetaType &other) const {
-        return base_type_name == other.base_type_name && string_to_type_func == other.string_to_type_func &&
-               type_to_string_func == other.type_to_string_func && literal_regex == other.literal_regex &&
+        return base_type_name == other.base_type_name &&
+               string_to_type_func_lambda == other.string_to_type_func_lambda &&
+               type_to_string_func_lambda == other.type_to_string_func_lambda && literal_regex == other.literal_regex &&
                element_types == other.element_types;
     }
 
     MetaType() {}
     MetaType(std::string name, std::string string_to_type_func, std::string type_to_string_func,
-             std::string literal_regex, const std::vector<MetaType> &element_types = {})
-        : base_type_name(std::move(name)), string_to_type_func(std::move(string_to_type_func)),
-          type_to_string_func(std::move(type_to_string_func)), literal_regex(std::move(literal_regex)),
-          element_types(element_types) {}
+             std::string serialize_type_func, std::string deserialize_type_func, std::string literal_regex,
+             const std::vector<MetaType> &element_types = {})
+        : base_type_name(std::move(name)), string_to_type_func_lambda(std::move(string_to_type_func)),
+          type_to_string_func_lambda(std::move(type_to_string_func)), serialize_type_func_lambda(serialize_type_func),
+          deserialize_type_func_lambda(deserialize_type_func), literal_regex(std::move(literal_regex)),
+          element_types(element_types) {
+
+        std::set<std::string> variably_sized_types = {"std::vector", "std::string"};
+        variably_sized = variably_sized_types.find(base_type_name) != variably_sized_types.end();
+    }
 
     std::string to_string() const { return to_string_rec(*this); }
 
@@ -71,8 +107,8 @@ class MetaType {
         std::ostringstream oss;
         oss << "MetaType {\n";
         oss << "  name: " << meta_type.base_type_name << "\n";
-        oss << "  string_to_type_func: " << meta_type.string_to_type_func << "\n";
-        oss << "  type_to_string_func: " << meta_type.type_to_string_func << "\n";
+        oss << "  string_to_type_func: " << meta_type.string_to_type_func_lambda << "\n";
+        oss << "  type_to_string_func: " << meta_type.type_to_string_func_lambda << "\n";
         oss << "  literal_regex: " << meta_type.literal_regex << "\n";
 
         if (!meta_type.element_types.empty()) {
@@ -104,30 +140,121 @@ inline std::string create_to_string_lambda(std::string type) {
 // a one to one mapping to one of the below concrete types
 inline MetaType UNSIGNED_INT =
     MetaType("unsigned int", "[](const std::string &s) { return static_cast<unsigned int>(std::stoul(s)); }",
-             create_to_string_lambda("unsigned int"), regex_utils::unsigned_int_regex);
+             create_to_string_lambda("unsigned int"),
+             "[](const unsigned int &v) { "
+             "  std::vector<uint8_t> buf(sizeof(unsigned int)); "
+             "  std::memcpy(buf.data(), &v, sizeof(unsigned int)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  unsigned int v; "
+             "  std::memcpy(&v, buf.data(), sizeof(unsigned int)); "
+             "  return v; }",
+             regex_utils::unsigned_int_regex);
 
-inline MetaType INT = MetaType("int", "[](const std::string &s) { return std::stoi(s); }",
-                               create_to_string_lambda("int"), regex_utils::int_regex);
+inline MetaType UINT8_T =
+    MetaType("uint8_t", "[](const std::string &s) { return static_cast<uint8_t>(std::stoul(s)); }",
+             create_to_string_lambda("uint8_t"),
+             "[](const uint8_t &v) { "
+             "  std::vector<uint8_t> buf(sizeof(uint8_t)); "
+             "  std::memcpy(buf.data(), &v, sizeof(uint8_t)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  uint8_t v; "
+             "  std::memcpy(&v, buf.data(), sizeof(uint8_t)); "
+             "  return v; }",
+             regex_utils::unsigned_int_regex);
+
+inline MetaType INT =
+    MetaType("int", "[](const std::string &s) { return std::stoi(s); }", create_to_string_lambda("int"),
+             "[](const int &v) { "
+             "  std::vector<uint8_t> buf(sizeof(int)); "
+             "  std::memcpy(buf.data(), &v, sizeof(int)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  int v; "
+             "  std::memcpy(&v, buf.data(), sizeof(int)); "
+             "  return v; }",
+             regex_utils::int_regex);
 
 inline MetaType SHORT = MetaType("short", "[](const std::string &s) { return static_cast<short>(std::stoi(s)); }",
-                                 create_to_string_lambda("short"), regex_utils::int_regex);
+                                 create_to_string_lambda("short"),
+                                 "[](const short &v) { "
+                                 "  std::vector<uint8_t> buf(sizeof(short)); "
+                                 "  std::memcpy(buf.data(), &v, sizeof(short)); "
+                                 "  return buf; }",
+                                 "[](const std::vector<uint8_t> &buf) { "
+                                 "  short v; "
+                                 "  std::memcpy(&v, buf.data(), sizeof(short)); "
+                                 "  return v; }",
+                                 regex_utils::int_regex);
 
-inline MetaType LONG = MetaType("long", "[](const std::string &s) { return std::stol(s); }",
-                                create_to_string_lambda("long"), regex_utils::int_regex);
+inline MetaType LONG =
+    MetaType("long", "[](const std::string &s) { return std::stol(s); }", create_to_string_lambda("long"),
+             "[](const long &v) { "
+             "  std::vector<uint8_t> buf(sizeof(long)); "
+             "  std::memcpy(buf.data(), &v, sizeof(long)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  long v; "
+             "  std::memcpy(&v, buf.data(), sizeof(long)); "
+             "  return v; }",
+             regex_utils::int_regex);
 
-inline MetaType FLOAT = MetaType("float", "[](const std::string &s) { return std::stof(s); }",
-                                 create_to_string_lambda("float"), regex_utils::float_regex);
+inline MetaType FLOAT =
+    MetaType("float", "[](const std::string &s) { return std::stof(s); }", create_to_string_lambda("float"),
+             "[](const float &v) { "
+             "  std::vector<uint8_t> buf(sizeof(float)); "
+             "  std::memcpy(buf.data(), &v, sizeof(float)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  float v; "
+             "  std::memcpy(&v, buf.data(), sizeof(float)); "
+             "  return v; }",
+             regex_utils::float_regex);
 
-inline MetaType DOUBLE = MetaType("double", "[](const std::string &s) { return std::stod(s); }",
-                                  create_to_string_lambda("double"), regex_utils::float_regex);
+inline MetaType DOUBLE =
+    MetaType("double", "[](const std::string &s) { return std::stod(s); }", create_to_string_lambda("double"),
+             "[](const double &v) { "
+             "  std::vector<uint8_t> buf(sizeof(double)); "
+             "  std::memcpy(buf.data(), &v, sizeof(double)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  double v; "
+             "  std::memcpy(&v, buf.data(), sizeof(double)); "
+             "  return v; }",
+             regex_utils::float_regex);
 
-inline MetaType STRING = MetaType("std::string", "[](const std::string &s) { return s; }",
-                                  "[](const std::string &s) { return s; }", regex_utils::string_literal);
+inline MetaType STRING =
+    MetaType("std::string", "[](const std::string &s) { return s; }", "[](const std::string &s) { return s; }",
+             // --- serialize ---
+             "[](const std::string &v) { "
+             "  std::vector<uint8_t> buf; "
+             "  size_t len = v.size(); "
+             "  buf.resize(sizeof(size_t) + len); "
+             "  std::memcpy(buf.data(), &len, sizeof(size_t)); "
+             "  std::memcpy(buf.data() + sizeof(size_t), v.data(), len); "
+             "  return buf; }",
+             // --- deserialize ---
+             "[](const std::vector<uint8_t> &buf) { "
+             "  if (buf.size() < sizeof(size_t)) return std::string(); "
+             "  size_t len; "
+             "  std::memcpy(&len, buf.data(), sizeof(size_t)); "
+             "  if (buf.size() < sizeof(size_t) + len) return std::string(); "
+             "  return std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len); }",
+             regex_utils::string_literal);
 
 inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\" || s == \"1\"; }",
-                                create_to_string_lambda("bool"), R"(true|false|1|0)");
+                                create_to_string_lambda("bool"),
+                                "[](const bool &v) { "
+                                "  std::vector<uint8_t> buf(1); "
+                                "  buf[0] = v ? 1 : 0; "
+                                "  return buf; }",
+                                "[](const std::vector<uint8_t> &buf) { "
+                                "  return buf[0] != 0; }",
+                                R"(true|false|1|0)");
 
-inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "", "", "MetaType");
+inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[](){ return \"\";}", "[](){}", "[](){}",
+                                           "MetaType");
 
 // GENERICS
 // NOTE: generic types cannot be defined directly as variables, there are
@@ -139,16 +266,26 @@ inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "", "", "Meta
 // layer deep support)
 std::string create_string_to_vector_of_type_func(MetaType type_parameter);
 std::string create_vector_of_type_to_string_func(MetaType type_parameter);
+std::string create_vector_of_type_serialize_func(MetaType type_parameter);
+std::string create_vector_of_type_deserialize_func(MetaType type_parameter);
+
 inline MetaType construct_vector_metatype(MetaType generic_type) {
     auto vector_of_type_to_string_func = create_vector_of_type_to_string_func(generic_type);
     auto string_to_vector_of_generic_type_func = create_string_to_vector_of_type_func(generic_type);
-    return MetaType("std::vector", string_to_vector_of_generic_type_func, vector_of_type_to_string_func,
+    auto vector_of_type_serialize_func = create_vector_of_type_serialize_func(generic_type);
+    auto vector_of_type_deserialize_func = create_vector_of_type_deserialize_func(generic_type);
+
+    return MetaType("std::vector",
+                    string_to_vector_of_generic_type_func, // string → vector<T>
+                    vector_of_type_to_string_func,         // vector<T> → string
+                    vector_of_type_serialize_func,         // vector<T> → bytes
+                    vector_of_type_deserialize_func,       // bytes → vector<T>
                     regex_utils::any_char_greedy, {generic_type});
-};
+}
 
 // NOTE: this is the only global state.
-inline std::vector<MetaType> concrete_types = {INT,  UNSIGNED_INT, FLOAT, DOUBLE,        SHORT,
-                                               LONG, STRING,       BOOL,  meta_type_type};
+inline std::vector<MetaType> concrete_types = {INT,   UNSIGNED_INT, UINT8_T, FLOAT, DOUBLE,
+                                               SHORT, LONG,         STRING,  BOOL,  meta_type_type};
 
 inline std::unordered_map<std::string, std::function<MetaType(MetaType)>> generic_type_to_metatype_constructor = {
     {"std::vector", [](MetaType mt) -> MetaType { return construct_vector_metatype(mt); }}};
@@ -698,7 +835,8 @@ class MetaCodeCollection {
     }
 
     MetaCodeCollection(const std::string &header_file_path, const std::string &cpp_file_path,
-                       const std::vector<std::string> &string_signatures = {}, FilterMode mode = FilterMode::None) {
+                       const std::vector<std::string> &string_signatures_to_filter_on = {},
+                       FilterMode mode = FilterMode::None) {
 
         std::string header_source = read_file(header_file_path);
         std::string cpp_source = read_file(cpp_file_path);
@@ -709,13 +847,13 @@ class MetaCodeCollection {
 
         name_space = extract_top_level_namespace(cpp_source).value_or("");
 
-        std::vector<MetaFunctionSignature> parsed_signatures;
-        for (const auto &str : string_signatures) {
+        std::vector<MetaFunctionSignature> signatures_to_filter_on;
+        for (const auto &str : string_signatures_to_filter_on) {
             MetaFunctionSignature mfs(str, name_space);
-            parsed_signatures.push_back(mfs);
+            signatures_to_filter_on.push_back(mfs);
         }
 
-        extract_functions(cpp_file_path, name_space, parsed_signatures, mode);
+        extract_functions(cpp_file_path, name_space, signatures_to_filter_on, mode);
     }
 
     void write_to_header_and_source(const std::string &header_file_path, const std::string &cpp_file_path) {
@@ -863,7 +1001,7 @@ class MetaCodeCollection {
         }
     }
     void extract_functions(const std::string &cpp_file_path, const std::string &name_space,
-                           const std::vector<MetaFunctionSignature> &filter_signatures, FilterMode mode) {
+                           const std::vector<MetaFunctionSignature> &signatures_to_filter, FilterMode mode) {
 
         bool namespace_wrapped = name_space != "";
 
@@ -875,7 +1013,7 @@ class MetaCodeCollection {
                 MetaFunction mf(func_str, name_space);
                 const auto &sig = mf.signature;
 
-                bool match_found = std::any_of(filter_signatures.begin(), filter_signatures.end(),
+                bool match_found = std::any_of(signatures_to_filter.begin(), signatures_to_filter.end(),
                                                [&](const MetaFunctionSignature &fs) { return fs == sig; });
 
                 bool allowed = (mode == FilterMode::Whitelist)   ? match_found
@@ -937,6 +1075,19 @@ std::string generate_string_invoker_for_function_collection_that_has_same_return
 std::string generate_deferred_string_invoker_for_function_collection_that_has_same_return_type(
     std::vector<MetaFunction> mfs_with_same_return_type, std::string return_type, std::string func_postfix);
 
+struct CustomTypeExtractionSettings {
+    CustomTypeExtractionSettings(const std::string &header_file_path,
+                                 const std::vector<std::string> &type_names_for_potential_filtering = {},
+                                 FilterMode mode = FilterMode::None)
+        : header_file_path(header_file_path), type_names_for_potential_filtering(type_names_for_potential_filtering),
+          mode(mode) {}
+    const std::string header_file_path;
+    const std::vector<std::string> type_names_for_potential_filtering;
+    meta_utils::FilterMode mode;
+};
+
+void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings);
+
 struct StringInvokerGenerationSettingsForHeaderSource {
     StringInvokerGenerationSettingsForHeaderSource(
         std::string header_file_path, std::string source_file_path, bool create_top_level_invoker = false,
@@ -955,7 +1106,8 @@ struct StringInvokerGenerationSettingsForHeaderSource {
     meta_utils::FilterMode mode;
 };
 
-void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings);
+void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
+                                           const std::vector<MetaType> &all_types);
 
 MetaCodeCollection
 generate_string_invokers_from_header_and_source(const StringInvokerGenerationSettingsForHeaderSource &sigsfhs);
@@ -975,7 +1127,7 @@ class MetaTypes {
         create_type_name_to_meta_type_map(concrete_types);
 
     std::unordered_map<std::string, std::function<meta_utils::MetaType(meta_utils::MetaType)>>
-        extended_generic_type_to_meta_type_constructor = meta_utils::generic_type_to_metatype_constructor;
+        generic_type_to_meta_type_constructor = meta_utils::generic_type_to_metatype_constructor;
 
   public:
     void add_new_concrete_type(const MetaType &meta_type) {
@@ -985,6 +1137,11 @@ class MetaTypes {
 
     const std::vector<MetaType> &get_concrete_types() const { return concrete_types; }
 
+    const std::unordered_map<std::string, std::function<meta_utils::MetaType(meta_utils::MetaType)>> &
+    get_generic_type_to_meta_type_constructor() const {
+        return generic_type_to_meta_type_constructor;
+    }
+
     const std::unordered_map<std::string, MetaType> &get_concrete_type_name_to_meta_type() const {
         return concrete_type_name_to_meta_type;
     }
@@ -992,6 +1149,9 @@ class MetaTypes {
 
 // TODO: remove this?
 inline MetaTypes meta_types;
+
+meta_utils::MetaClass create_meta_class_from_source(const std::string &source);
+meta_utils::MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types);
 
 }; // namespace meta_utils
 
@@ -1009,8 +1169,8 @@ template <> struct hash<meta_utils::MetaType> {
 
         // Hash each string member
         hash_combine(seed, std::hash<std::string>{}(mt.base_type_name));
-        hash_combine(seed, std::hash<std::string>{}(mt.string_to_type_func));
-        hash_combine(seed, std::hash<std::string>{}(mt.type_to_string_func));
+        hash_combine(seed, std::hash<std::string>{}(mt.string_to_type_func_lambda));
+        hash_combine(seed, std::hash<std::string>{}(mt.type_to_string_func_lambda));
         hash_combine(seed, std::hash<std::string>{}(mt.literal_regex));
 
         // Hash vector elements recursively

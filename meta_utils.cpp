@@ -1,7 +1,9 @@
 #include "meta_utils.hpp"
 #include <filesystem>
+#include <fmt/base.h>
 #include <iostream>
 #include <optional>
+#include <tuple>
 #include <vector>
 #include <algorithm> // for std::remove_if
 
@@ -86,7 +88,7 @@ std::string create_string_to_vector_of_type_func(MetaType type_parameter) {
     msa.add("");
     msa.add("    for (auto it = begin; it != end; ++it) {");
     msa.add("        try {");
-    msa.add("            auto conversion = ", type_parameter.string_to_type_func, ";");
+    msa.add("            auto conversion = ", type_parameter.string_to_type_func_lambda, ";");
     msa.add("            result.push_back(conversion(it->str()));");
     msa.add("        } catch (...) {");
     msa.add("            // Ignore malformed elements");
@@ -104,7 +106,7 @@ std::string create_vector_of_type_to_string_func(MetaType type_parameter) {
     msa.add("[=](const std::vector<", type_parameter.get_type_name(), ">& vec) -> std::string {");
     msa.add("    std::ostringstream oss;");
     msa.add("    oss << \"{\";");
-    msa.add("    auto conversion = ", type_parameter.type_to_string_func, ";");
+    msa.add("    auto conversion = ", type_parameter.type_to_string_func_lambda, ";");
     msa.add("");
     msa.add("    for (size_t i = 0; i < vec.size(); ++i) {");
     msa.add("        oss << conversion(vec[i]);");
@@ -117,6 +119,404 @@ std::string create_vector_of_type_to_string_func(MetaType type_parameter) {
     msa.add("}");
 
     return msa.str();
+}
+
+std::string create_vector_of_type_serialize_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::vector<", type_parameter.get_type_name(), ">& vec) -> std::vector<uint8_t> {");
+    msa.add("    std::vector<uint8_t> buffer;");
+
+    // store vector size first
+    msa.add("    size_t count = vec.size();");
+    msa.add("    buffer.resize(sizeof(size_t));");
+    msa.add("    std::memcpy(buffer.data(), &count, sizeof(size_t));");
+
+    msa.add("");
+    msa.add("    auto element_serializer = ", type_parameter.serialize_type_func_lambda, ";");
+
+    if (type_parameter.variably_sized) {
+        // variable-size inner type
+        msa.add("    for (const auto& elem : vec) {");
+        msa.add("        auto elem_bytes = element_serializer(elem);");
+        msa.add("        size_t elem_size = elem_bytes.size();");
+        msa.add("        buffer.resize(buffer.size() + sizeof(size_t));");
+        msa.add("        std::memcpy(buffer.data() + buffer.size() - sizeof(size_t), &elem_size, sizeof(size_t));");
+        msa.add("        buffer.insert(buffer.end(), elem_bytes.begin(), elem_bytes.end());");
+        msa.add("    }");
+    } else {
+        // fixed-size inner type
+        msa.add("    if (!vec.empty()) {");
+        msa.add("        size_t elem_size = sizeof(", type_parameter.get_type_name(), ");");
+        msa.add("        buffer.resize(buffer.size() + vec.size() * elem_size);");
+        msa.add("        std::memcpy(buffer.data() + sizeof(size_t), vec.data(), vec.size() * elem_size);");
+        msa.add("    }");
+    }
+
+    msa.add("    return buffer;");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_vector_of_type_deserialize_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    const std::string &inner = type_parameter.get_type_name();
+
+    msa.add("[=](const std::vector<uint8_t>& buffer) -> std::vector<", inner, "> {");
+    msa.add("    std::vector<", inner, "> result;");
+    msa.add("    if (buffer.size() < sizeof(size_t)) return result;");
+
+    // read count
+    msa.add("    size_t count;");
+    msa.add("    std::memcpy(&count, buffer.data(), sizeof(size_t));");
+
+    msa.add("");
+    msa.add("    size_t offset = sizeof(size_t);");
+    msa.add("    auto element_deserializer = ", type_parameter.deserialize_type_func_lambda, ";");
+
+    if (type_parameter.variably_sized) {
+        // variable-size elements: each element prefixed with its size
+        msa.add("    for (size_t i = 0; i < count; ++i) {");
+        msa.add("        // element is variably sized: read elem_size first");
+        msa.add("        if (offset + sizeof(size_t) > buffer.size()) break;");
+        msa.add("        size_t elem_size;");
+        msa.add("        std::memcpy(&elem_size, buffer.data() + offset, sizeof(size_t));");
+        msa.add("        offset += sizeof(size_t);");
+        msa.add("        if (offset + elem_size > buffer.size()) break;");
+        msa.add("        std::vector<uint8_t> elem_buf(buffer.begin() + offset, buffer.begin() + offset + elem_size);");
+        msa.add("        ", inner, " elem = element_deserializer(elem_buf);");
+        msa.add("        result.push_back(elem);");
+        msa.add("        offset += elem_size;");
+        msa.add("    }");
+    } else {
+        // fixed-size elements: read sizeof(inner) bytes per element
+        msa.add("    size_t elem_size = sizeof(", inner, ");");
+        msa.add("    if (offset + count * elem_size > buffer.size()) return result; // safety check");
+        msa.add("    for (size_t i = 0; i < count; ++i) {");
+        msa.add("        std::vector<uint8_t> elem_buf(buffer.begin() + offset, buffer.begin() + offset + elem_size);");
+        msa.add("        ", inner, " elem = element_deserializer(elem_buf);");
+        msa.add("        result.push_back(elem);");
+        msa.add("        offset += elem_size;");
+        msa.add("    }");
+    }
+
+    msa.add("    return result;");
+    msa.add("}");
+
+    return msa.str();
+}
+
+MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types) {
+    // 1. Try concrete lookup
+    const auto &concrete_map = types.get_concrete_type_name_to_meta_type();
+    auto it = concrete_map.find(type_str);
+    if (it != concrete_map.end()) {
+        return it->second;
+    }
+
+    // 2. Try generic lookup (e.g., std::vector<int>)
+    // naive parse: find '<' ... '>'
+    auto lt_pos = type_str.find('<');
+    auto gt_pos = type_str.rfind('>');
+    if (lt_pos != std::string::npos && gt_pos != std::string::npos && gt_pos > lt_pos) {
+        std::string generic_name = type_str.substr(0, lt_pos);
+        std::string inner_type = type_str.substr(lt_pos + 1, gt_pos - lt_pos - 1);
+
+        // trim spaces around inner_type if necessary
+        inner_type.erase(0, inner_type.find_first_not_of(" \t"));
+        inner_type.erase(inner_type.find_last_not_of(" \t") + 1);
+
+        // recursively resolve inner type
+        MetaType inner_meta = resolve_meta_type(inner_type, types);
+
+        // find generic constructor
+        auto &generic_map = types.get_generic_type_to_meta_type_constructor();
+        auto gen_it = generic_map.find(generic_name);
+        if (gen_it != generic_map.end()) {
+            return gen_it->second(inner_meta);
+        }
+    }
+
+    throw std::runtime_error("Unknown type in MetaTypes: " + type_str);
+}
+
+meta_utils::MetaClass create_meta_class_from_source(const std::string &source) {
+    std::cout << "[create_meta_class_from_source] BEGIN\n";
+    std::cout << "[source]\n" << source << "\n";
+
+    // 1) parse
+    auto pr = cpp_parsing::class_def_parser_good->parse(source, 0);
+    std::cout << "[parse result]\n" << pr.to_string() << "\n";
+
+    // 2) find class name
+    const cpp_parsing::ParseResult *class_name_node = nullptr;
+    class_name_node = cpp_parsing::find_first_by_name(&pr, "variable");
+    if (!class_name_node)
+        class_name_node = cpp_parsing::find_first_by_name(&pr, "identifier");
+
+    std::string class_name =
+        class_name_node ? text_utils::trim(cpp_parsing::node_text(class_name_node)) : std::string("UnnamedClass");
+    std::cout << "[class name] " << class_name << "\n";
+
+    meta_utils::MetaClass mc(class_name);
+
+    // 3) find nested_braces
+    const cpp_parsing::ParseResult *nested = cpp_parsing::find_first_by_name(&pr, "nested_braces");
+    if (!nested) {
+        std::cerr << "[error] No nested_braces found — returning empty MetaClass for " << class_name << "\n";
+        return mc;
+    }
+    std::cout << "[nested_braces found]\n" << nested->to_string() << "\n";
+
+    // 4) collect declarations
+    std::vector<const cpp_parsing::ParseResult *> declarations;
+    cpp_parsing::collect_by_name(nested, "declaration", declarations);
+    std::cout << "[declarations count] " << declarations.size() << "\n";
+
+    // Helpers
+    auto extract_type_text = [&](const cpp_parsing::ParseResult *decl_node) -> std::string {
+        const cpp_parsing::ParseResult *type_node = cpp_parsing::find_first_name_contains(decl_node, "type");
+        if (!type_node)
+            type_node = cpp_parsing::find_first_by_name(decl_node, "non_templated_type");
+        if (!type_node)
+            type_node = cpp_parsing::find_first_by_name(decl_node, "sequence");
+        if (type_node) {
+            std::string txt = text_utils::trim(cpp_parsing::node_text(type_node));
+            std::cout << "  [extract_type_text] found: '" << txt << "'\n";
+            return txt;
+        }
+        for (const auto &child : decl_node->sub_results) {
+            if (child.parser_name == "identifier" || child.parser_name == "variable")
+                break;
+            if (!text_utils::trim(child.match).empty()) {
+                std::string txt = text_utils::trim(child.match);
+                std::cout << "  [extract_type_text] fallback child match: '" << txt << "'\n";
+                return txt;
+            }
+        }
+        std::cout << "  [extract_type_text] defaulted to int\n";
+        return "int";
+    };
+
+    auto extract_variable_name = [&](const cpp_parsing::ParseResult *decl_node) -> std::string {
+        const cpp_parsing::ParseResult *var_node = find_first_by_name(decl_node, "variable");
+        if (!var_node)
+            var_node = find_first_by_name(decl_node, "identifier");
+        if (var_node) {
+            std::string txt = text_utils::trim(node_text(var_node));
+            std::cout << "  [extract_variable_name] found: '" << txt << "'\n";
+            return txt;
+        }
+        for (const auto &child : decl_node->sub_results) {
+            std::string t = text_utils::trim(child.match);
+            if (!t.empty() && std::isalpha((unsigned char)t[0])) {
+                std::cout << "  [extract_variable_name] heuristic: '" << t << "'\n";
+                return t;
+            }
+        }
+        std::cout << "  [extract_variable_name] defaulted to 'unnamed'\n";
+        return "unnamed";
+    };
+
+    auto extract_initializer = [&](const cpp_parsing::ParseResult *decl_node)
+        -> std::optional<std::pair<std::string, meta_utils::MetaVariable::InitStyle>> {
+        const cpp_parsing::ParseResult *assign_node = find_first_by_name(decl_node, "assignment");
+        if (assign_node) {
+            std::string rhs = text_utils::trim(node_text(assign_node));
+            std::cout << "  [extract_initializer] assignment: '" << rhs << "'\n";
+            return std::make_pair(rhs, meta_utils::MetaVariable::InitStyle::Assignment);
+        }
+        for (const auto &child : decl_node->sub_results) {
+            if (text_utils::trim(child.match) == "=") {
+                std::string rhs;
+                bool started = false;
+                for (const auto &sibling : decl_node->sub_results) {
+                    if (!started) {
+                        if (&sibling == &child)
+                            started = true;
+                        continue;
+                    }
+                    std::string t = text_utils::trim(sibling.match);
+                    if (t == ";")
+                        break;
+                    if (!rhs.empty())
+                        rhs += " ";
+                    rhs += t;
+                }
+                if (!rhs.empty()) {
+                    std::cout << "  [extract_initializer] '=' rhs: '" << rhs << "'\n";
+                    return std::make_pair(rhs, meta_utils::MetaVariable::InitStyle::Assignment);
+                }
+            }
+            if (child.match.find('{') != std::string::npos) {
+                std::string body = text_utils::trim(node_text(&child));
+                std::cout << "  [extract_initializer] brace: '" << body << "'\n";
+                return std::make_pair(body, meta_utils::MetaVariable::InitStyle::Brace);
+            }
+        }
+        std::cout << "  [extract_initializer] none\n";
+        return std::nullopt;
+    };
+
+    // 5) iterate declarations
+    for (size_t i = 0; i < declarations.size(); ++i) {
+        const cpp_parsing::ParseResult *decl = declarations[i];
+        std::cout << "\n[declaration " << i << "]\n" << decl->to_string() << "\n";
+
+        std::string type_text = extract_type_text(decl);
+        std::string var_name = extract_variable_name(decl);
+
+        std::string value_text;
+        meta_utils::MetaVariable::InitStyle init_style = meta_utils::MetaVariable::InitStyle::Assignment;
+
+        auto maybe_init = extract_initializer(decl);
+        if (maybe_init) {
+            value_text = maybe_init->first;
+            init_style = maybe_init->second;
+        } else {
+            value_text = "{}";
+            init_style = meta_utils::MetaVariable::InitStyle::Assignment;
+        }
+
+        std::cout << "[final variable] type='" << type_text << "' name='" << var_name << "' init='" << value_text
+                  << "'\n";
+
+        meta_utils::MetaVariable mv(type_text, var_name, value_text, init_style);
+        meta_utils::MetaAttribute ma(std::move(mv));
+        mc.add_attribute(ma);
+    }
+
+    std::cout << "[create_meta_class_from_source] END\n";
+    return mc;
+}
+
+MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) {
+    text_utils::MultilineStringAccumulator to_string_func;
+    text_utils::MultilineStringAccumulator from_string_func;
+    text_utils::MultilineStringAccumulator serialize_func;
+    text_utils::MultilineStringAccumulator deserialize_func;
+
+    bool variably_sized = false;
+
+    for (size_t i = 0; i < cls.attributes.size(); ++i) {
+        const auto &attr = cls.attributes[i];
+        auto meta = resolve_meta_type(attr.variable.type, types);
+        if (meta.variably_sized) {
+            variably_sized = true;
+        }
+    }
+
+    // ---------- To String ----------
+    to_string_func.add("[=](const ", cls.name, "& obj) -> std::string {");
+    to_string_func.add("    std::ostringstream oss;");
+    to_string_func.add("    oss << \"{\";");
+
+    for (size_t i = 0; i < cls.attributes.size(); ++i) {
+        const auto &attr = cls.attributes[i];
+        auto meta = resolve_meta_type(attr.variable.type, types);
+
+        to_string_func.add("    { auto conv = ", meta.type_to_string_func_lambda, ";");
+        to_string_func.add("      oss << \"", attr.variable.name, "=\" << conv(obj.", attr.variable.name, "); }");
+
+        if (i + 1 < cls.attributes.size())
+            to_string_func.add("    oss << \", \";");
+    }
+
+    to_string_func.add("    oss << \"}\";");
+    to_string_func.add("    return oss.str();");
+    to_string_func.add("}");
+
+    // ---------- From String ----------
+    from_string_func.add("[=](const std::string &s) -> ", cls.name, " {");
+    from_string_func.add("    ", cls.name, " obj;");
+    from_string_func.add("    std::string trimmed = s.substr(1, s.size() - 2); // remove {}");
+    from_string_func.add("    std::istringstream iss(trimmed);");
+    from_string_func.add("    std::string token;");
+
+    for (const auto &attr : cls.attributes) {
+        auto meta = resolve_meta_type(attr.variable.type, types);
+
+        from_string_func.add("    if (std::getline(iss, token, ',')) {");
+        from_string_func.add("        auto pos = token.find('=');");
+        from_string_func.add("        if (pos != std::string::npos) {");
+        from_string_func.add("            std::string value_str = token.substr(pos + 1);");
+        from_string_func.add("            auto conv = ", meta.string_to_type_func_lambda, ";");
+        from_string_func.add("            obj.", attr.variable.name, " = conv(value_str);");
+        from_string_func.add("        }");
+        from_string_func.add("    }");
+    }
+
+    from_string_func.add("    return obj;");
+    from_string_func.add("}");
+
+    // NOTE: read this if it doesn't make sense: https://toolbox.cuppajoeman.com/programming/serialization.html
+
+    // ---------- Serialize ----------
+    serialize_func.add("[=](const ", cls.name, "& obj) -> std::vector<uint8_t> {");
+    serialize_func.add("    std::vector<uint8_t> buffer;");
+
+    for (const auto &attr : cls.attributes) {
+        auto meta = resolve_meta_type(attr.variable.type, types);
+        serialize_func.add("    { auto ser = ", meta.serialize_type_func_lambda, ";");
+        serialize_func.add("      auto bytes = ser(obj.", attr.variable.name, ");");
+
+        if (meta.variably_sized) {
+            // prepend size for variable-size attributes
+            serialize_func.add("      size_t len = bytes.size();");
+            serialize_func.add("      buffer.resize(buffer.size() + sizeof(size_t));");
+            serialize_func.add(
+                "      std::memcpy(buffer.data() + buffer.size() - sizeof(size_t), &len, sizeof(size_t));");
+        }
+
+        serialize_func.add("      buffer.insert(buffer.end(), bytes.begin(), bytes.end()); }");
+    }
+
+    serialize_func.add("    return buffer;");
+    serialize_func.add("}");
+
+    // ---------- Deserialize ----------
+    deserialize_func.add("[=](const std::vector<uint8_t> &buffer) -> ", cls.name, " {");
+    deserialize_func.add("    ", cls.name, " obj;");
+    deserialize_func.add("    size_t offset = 0;");
+
+    for (const auto &attr : cls.attributes) {
+        auto meta = resolve_meta_type(attr.variable.type, types);
+
+        deserialize_func.add("    { auto deser = ", meta.deserialize_type_func_lambda, ";");
+
+        if (meta.variably_sized) {
+            // variable-size: first read size prefix
+            deserialize_func.add("      if (offset + sizeof(size_t) > buffer.size()) return obj;");
+            deserialize_func.add("      size_t len = 0;");
+            deserialize_func.add("      std::memcpy(&len, buffer.data() + offset, sizeof(size_t));");
+            deserialize_func.add("      offset += sizeof(size_t);");
+            deserialize_func.add("      if (offset + len > buffer.size()) return obj;");
+            deserialize_func.add(
+                "      std::vector<uint8_t> slice(buffer.begin() + offset, buffer.begin() + offset + len);");
+            deserialize_func.add("      obj.", attr.variable.name, " = deser(slice);");
+            deserialize_func.add("      offset += len;");
+        } else {
+            // fixed-size: slice exactly sizeof(attribute)
+            deserialize_func.add("      size_t len = sizeof(obj.", attr.variable.name, ");");
+            deserialize_func.add("      if (offset + len > buffer.size()) return obj;");
+            deserialize_func.add(
+                "      std::vector<uint8_t> slice(buffer.begin() + offset, buffer.begin() + offset + len);");
+            deserialize_func.add("      obj.", attr.variable.name, " = deser(slice);");
+            deserialize_func.add("      offset += len;");
+        }
+
+        deserialize_func.add("    }");
+    }
+
+    deserialize_func.add("    return obj;");
+    deserialize_func.add("}");
+
+    auto mt = MetaType(cls.name, from_string_func.str(), to_string_func.str(), serialize_func.str(),
+                       deserialize_func.str(), regex_utils::any_char_greedy, {});
+    mt.variably_sized = variably_sized;
+    return mt;
 }
 
 // Extracts top-level comma-separated substrings from inside <...>
@@ -382,7 +782,7 @@ std::string generate_string_invoker_for_function_with_string_return_type(const M
         if (!meta_type_opt) {
             throw std::runtime_error("Unknown return type: " + return_type);
         }
-        return_type_to_string_func = meta_type_opt.value().type_to_string_func;
+        return_type_to_string_func = meta_type_opt.value().type_to_string_func_lambda;
     }
 
     // Compose the new function name
@@ -416,7 +816,7 @@ StringToTypeConversions get_code_to_generate_invocation(const std::vector<MetaPa
         const auto &param = params[i];
         int group_num = static_cast<int>(i + 1);
 
-        const std::string &string_to_type_func = param.type.string_to_type_func;
+        const std::string &string_to_type_func = param.type.string_to_type_func_lambda;
 
         std::string conversion_func_name = "conversion" + std::to_string(group_num);
         lambda_conversions.push_back("    auto " + conversion_func_name + " = " + string_to_type_func + ";");
@@ -639,7 +1039,60 @@ std::string generate_deferred_string_invoker_for_function_collection_that_has_sa
     return oss.str();
 }
 
-void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings) {
+std::string lambda_to_function(const std::string &lambda_str, const std::string &func_name,
+                               const std::string &return_type) {
+    // Make "-> return_type" optional
+    static const std::regex lambda_regex(R"(\[.*\]\s*\(([^)]*)\)\s*(?:->\s*([\w:<>\s*&]+))?\s*\{([\s\S]*)\})");
+
+    std::smatch match;
+    if (!std::regex_search(lambda_str, match, lambda_regex)) {
+        throw std::invalid_argument("Lambda string is not a valid lambda definition");
+    }
+
+    std::string params_str = match[1].str();
+    std::string body_str = match[3].str();
+
+    // Trim leading/trailing whitespace on body
+    auto trim = [](const std::string &s) {
+        const auto begin = s.find_first_not_of(" \t\r\n");
+        const auto end = s.find_last_not_of(" \t\r\n");
+        return (begin == std::string::npos) ? "" : s.substr(begin, end - begin + 1);
+    };
+
+    body_str = trim(body_str);
+
+    std::ostringstream oss;
+    oss << return_type << " " << func_name << "(" << params_str << ") {\n" << body_str << "\n}";
+    return oss.str();
+}
+
+void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings) {
+
+    // auto class_sources = cpp_parsing::extract_top_level_classes("src/custom_type.hpp");
+    auto class_sources = cpp_parsing::extract_top_level_classes(custom_type_extraction_settings.header_file_path);
+
+    std::vector<MetaType> extracted_types = {};
+
+    for (const auto &class_source : class_sources) {
+
+        // TODO: in the future I need to incorporate the settings filter in here to not get all types
+        auto mc = meta_utils::create_meta_class_from_source(class_source);
+
+        meta_utils::MetaType custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
+        meta_utils::MetaInclude mi(custom_type_extraction_settings.header_file_path);
+        custom_mt.includes_required.push_back(mi);
+
+        extracted_types.push_back(custom_mt);
+
+        // NOTE: this is really important, as types are added in they may rely on previous ones, and thus we have to
+        // register types as we go forward iteratively
+        meta_utils::meta_types.add_new_concrete_type(custom_mt);
+    }
+}
+
+// NOTE: this is becoming more general than that.
+void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
+                                           const std::vector<MetaType> &all_types) {
 
     auto output_header_path = "src/meta_program/meta_program.hpp";
     auto output_source_path = "src/meta_program/meta_program.cpp";
@@ -657,7 +1110,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     std::vector<std::string> header_paths_of_other_string_invokers;
 
-    std::vector<MetaCodeCollection> generated_mccs;
+    std::vector<MetaCodeCollection> generated_mcc_for_each_header_source_pair;
 
     for (const auto &setting : settings) {
         std::string meta_code_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
@@ -666,7 +1119,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         auto rel_include = "#include \"" + rel_path + "\"";
         header_paths_of_other_string_invokers.push_back(rel_include);
         MetaCodeCollection mfc_that_was_just_written = generate_string_invokers_from_header_and_source(setting);
-        generated_mccs.push_back(mfc_that_was_just_written);
+        generated_mcc_for_each_header_source_pair.push_back(mfc_that_was_just_written);
 
         // WARN: assuming each one has at least one class
         MetaClass meta_class_for_source_header_pair = mfc_that_was_just_written.classes.at(0);
@@ -700,22 +1153,60 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     // NOTE: now we want to collect all the functions that we can call, which is given by the input collection
     std::vector<MetaVariable> all_meta_function_signatures_from_sub_string_invokers =
-        collection_utils::join_all_vectors(
-            collection_utils::map_vector(generated_mccs, [](MetaCodeCollection mfc) { return mfc.variables; }));
+        collection_utils::join_all_vectors(collection_utils::map_vector(
+            generated_mcc_for_each_header_source_pair, [](MetaCodeCollection mfc) { return mfc.variables; }));
 
-    MetaCodeCollection top_level_invoker_mfc;
-    top_level_invoker_mfc.name = "meta_program";
-    top_level_invoker_mfc.name_space = "meta_program";
+    MetaCodeCollection meta_program_mcc;
+    meta_utils::MetaClass meta_class("MetaProgram");
+
+    meta_program_mcc.name = "meta_program";
+    meta_program_mcc.name_space = "meta_program";
+
+    //
+
+    struct Helper {
+        std::string lambda_source;
+        std::string func_name;
+        std::string return_type;
+    };
+
+    std::cout << "about to do funcs" << std::endl;
+    for (const auto &mt : all_types) {
+        std::cout << "working on " << mt.base_type_name << std::endl;
+
+        for (const auto &include : mt.includes_required) {
+            meta_program_mcc.includes_required_for_declaration.push_back(include.str(output_header_dir));
+        }
+
+        std::unordered_map<char, char> replacement_map = {{':', '_'}, {' ', '_'}};
+
+        std::vector<Helper> func_sources = {
+            {mt.type_to_string_func_lambda,
+             text_utils::replace_chars(mt.base_type_name, replacement_map) + "_to_string", "std::string"},
+            {mt.string_to_type_func_lambda,
+             "string_to_" + text_utils::replace_chars(mt.base_type_name, replacement_map), mt.base_type_name},
+            {mt.serialize_type_func_lambda,
+             "serialize_" + text_utils::replace_chars(mt.base_type_name, replacement_map), "std::vector<uint8_t>"},
+            {mt.deserialize_type_func_lambda,
+             "deserialize_" + text_utils::replace_chars(mt.base_type_name, replacement_map), mt.base_type_name}};
+
+        for (const auto &[lambda_source, func_name, return_type] : func_sources) {
+            std::cout << lambda_source << std::endl;
+            auto regular_func = lambda_to_function(lambda_source, func_name, return_type);
+            std::cout << "just made: " << regular_func << std::endl;
+            MetaFunction mf(regular_func);
+            meta_class.add_method(mf);
+        }
+    }
 
     // top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
-    top_level_invoker_mfc.includes_required_for_declaration = header_paths_of_other_string_invokers;
-    top_level_invoker_mfc.includes_required_for_declaration.push_back(optional_include);
-    top_level_invoker_mfc.includes_required_for_declaration.push_back(
+    meta_program_mcc.includes_required_for_declaration = collection_utils::join_vectors(
+        meta_program_mcc.includes_required_for_declaration, header_paths_of_other_string_invokers);
+    meta_program_mcc.includes_required_for_declaration.push_back(optional_include);
+    meta_program_mcc.includes_required_for_declaration.push_back(
         create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp")));
-    top_level_invoker_mfc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
-
-    meta_utils::MetaClass meta_class("MetaProgram");
+    meta_program_mcc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
 
     auto create_func_that_sequentially_tries_funcs_that_return_opt =
         [&](std::unordered_map<std::string, std::vector<ObjectFunction>> &return_type_to_invokers_that_return_it) {
@@ -761,7 +1252,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     MetaAttribute concrete_types_reference(concrete_types, AccessSpecifier::Public);
     meta_class.add_attribute(concrete_types_reference);
 
-    for (const auto &mcc : generated_mccs) {
+    for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
         // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit
         // sketchy
         MetaClass mc = mcc.classes.at(0);
@@ -779,9 +1270,9 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         meta_class.add_attribute(ma);
     }
 
-    top_level_invoker_mfc.classes.push_back(meta_class);
+    meta_program_mcc.classes.push_back(meta_class);
 
-    top_level_invoker_mfc.write_to_header_and_source(output_header_path, output_source_path);
+    meta_program_mcc.write_to_header_and_source(output_header_path, output_source_path);
 }
 
 MetaCodeCollection
@@ -793,11 +1284,13 @@ generate_string_invokers_from_header_and_source(const StringInvokerGenerationSet
 
 MetaCodeCollection generate_string_invokers_from_header_and_source(
     const std::string &input_header_path, const std::string &input_source_path, bool create_top_level_invoker,
-    bool create_type_grouped_invokers, const std::vector<std::string> &string_signatures, FilterMode mode) {
+    bool create_type_grouped_invokers, const std::vector<std::string> &string_signatures_to_filter_on,
+    FilterMode mode) {
 
     const std::string output_name_prefix = "meta_";
 
-    meta_utils::MetaCodeCollection input_collection(input_header_path, input_source_path, string_signatures, mode);
+    meta_utils::MetaCodeCollection input_collection(input_header_path, input_source_path,
+                                                    string_signatures_to_filter_on, mode);
 
     meta_utils::MetaCodeCollection output_collection;
 
