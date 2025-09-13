@@ -687,6 +687,13 @@ class MetaConstructor {
     }
 };
 
+class MetaEnum {
+  public:
+    std::string name;
+    std::string type;
+    std::vector<std::string> enum_names;
+};
+
 class MetaClass {
   public:
     std::string name;

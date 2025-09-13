@@ -392,6 +392,59 @@ meta_utils::MetaClass create_meta_class_from_source(const std::string &source) {
     return mc;
 }
 
+meta_utils::MetaEnum create_meta_enum_from_source(const std::string &source) {
+    std::cout << "[create_meta_enum_from_source] BEGIN\n";
+    std::cout << "[source]\n" << source << "\n";
+
+    // 1) parse
+    auto pr = cpp_parsing::enum_class_def_parser->parse(source, 0);
+    std::cout << "[parse result]\n" << pr.to_string() << "\n";
+
+    // 2) find enum name
+    const cpp_parsing::ParseResult *name_node = cpp_parsing::find_first_by_name(&pr, "variable");
+    std::string enum_name = name_node ? text_utils::trim(cpp_parsing::node_text(name_node)) : "UnnamedEnum";
+    std::cout << "[enum name] " << enum_name << "\n";
+
+    // 3) find underlying type (inheritance node)
+    const cpp_parsing::ParseResult *inheritance_node = cpp_parsing::find_first_by_name(&pr, "class_inheritance");
+    std::string enum_type = "int"; // default
+    if (inheritance_node) {
+        const cpp_parsing::ParseResult *type_node = cpp_parsing::find_first_by_name(inheritance_node, "variable");
+        if (type_node) {
+            enum_type = text_utils::trim(cpp_parsing::node_text(type_node));
+        }
+    }
+    std::cout << "[enum type] " << enum_type << "\n";
+
+    meta_utils::MetaEnum me;
+    me.name = enum_name;
+    me.type = enum_type;
+
+    // 4) extract nested braces with the enumerators
+    const cpp_parsing::ParseResult *nested = cpp_parsing::find_first_by_name(&pr, "nested_braces");
+    if (!nested) {
+        std::cerr << "[error] No nested_braces found — returning empty MetaEnum for " << enum_name << "\n";
+        return me;
+    }
+    std::cout << "[nested_braces found]\n" << nested->to_string() << "\n";
+
+    // 5) collect enum values
+    std::vector<const cpp_parsing::ParseResult *> values;
+    cpp_parsing::collect_by_name(nested, "variable", values);
+    std::cout << "[enum values count] " << values.size() << "\n";
+
+    for (size_t i = 0; i < values.size(); ++i) {
+        std::string value_name = text_utils::trim(cpp_parsing::node_text(values[i]));
+        if (!value_name.empty()) {
+            std::cout << "  [enum value] '" << value_name << "'\n";
+            me.enum_names.push_back(value_name);
+        }
+    }
+
+    std::cout << "[create_meta_enum_from_source] END\n";
+    return me;
+}
+
 MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) {
     text_utils::MultilineStringAccumulator to_string_func;
     text_utils::MultilineStringAccumulator from_string_func;
@@ -516,6 +569,58 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     auto mt = MetaType(cls.name, from_string_func.str(), to_string_func.str(), serialize_func.str(),
                        deserialize_func.str(), regex_utils::any_char_greedy, {});
     mt.variably_sized = variably_sized;
+    return mt;
+}
+
+MetaType construct_enum_metatype(const MetaEnum &enu, const MetaTypes &types) {
+    text_utils::MultilineStringAccumulator to_string_func;
+    text_utils::MultilineStringAccumulator from_string_func;
+    text_utils::MultilineStringAccumulator serialize_func;
+    text_utils::MultilineStringAccumulator deserialize_func;
+
+    std::string fq_enum_name = enu.name; // e.g., "PacketType"
+    std::string underlying = enu.type.empty() ? "int" : enu.type;
+
+    // ---------- To String ----------
+    to_string_func.add("[=](", fq_enum_name, " value) -> std::string {");
+    to_string_func.add("    switch(value) {");
+
+    for (const auto &name : enu.enum_names) {
+        to_string_func.add("        case ", fq_enum_name, "::", name, ": return \"", fq_enum_name, "::", name, "\";");
+    }
+
+    to_string_func.add("        default: return \"<unknown ", fq_enum_name, ">\";");
+    to_string_func.add("    }");
+    to_string_func.add("}");
+
+    // ---------- From String ----------
+    from_string_func.add("[=](const std::string &s) -> ", fq_enum_name, " {");
+    for (const auto &name : enu.enum_names) {
+        from_string_func.add("    if (s == \"", fq_enum_name, "::", name, "\") return ", fq_enum_name, "::", name, ";");
+    }
+    from_string_func.add("    return static_cast<", fq_enum_name, ">(0); // default fallback");
+    from_string_func.add("}");
+
+    // ---------- Serialize ----------
+    serialize_func.add("[=](", fq_enum_name, " value) -> std::vector<uint8_t> {");
+    serialize_func.add("    std::vector<uint8_t> buffer(sizeof(", underlying, "));");
+    serialize_func.add("    ", underlying, " raw = static_cast<", underlying, ">(value);");
+    serialize_func.add("    std::memcpy(buffer.data(), &raw, sizeof(", underlying, "));");
+    serialize_func.add("    return buffer;");
+    serialize_func.add("}");
+
+    // ---------- Deserialize ----------
+    deserialize_func.add("[=](const std::vector<uint8_t> &buffer) -> ", fq_enum_name, " {");
+    deserialize_func.add("    if (buffer.size() < sizeof(", underlying, ")) return static_cast<", fq_enum_name,
+                         ">(0);");
+    deserialize_func.add("    ", underlying, " raw = 0;");
+    deserialize_func.add("    std::memcpy(&raw, buffer.data(), sizeof(", underlying, "));");
+    deserialize_func.add("    return static_cast<", fq_enum_name, ">(raw);");
+    deserialize_func.add("}");
+
+    auto mt = MetaType(fq_enum_name, from_string_func.str(), to_string_func.str(), serialize_func.str(),
+                       deserialize_func.str(), regex_utils::any_char_greedy, {});
+    mt.variably_sized = false;
     return mt;
 }
 
@@ -1070,9 +1175,26 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
 
     // auto class_sources = cpp_parsing::extract_top_level_classes("src/custom_type.hpp");
     auto class_sources = cpp_parsing::extract_top_level_classes(custom_type_extraction_settings.header_file_path);
+    auto enum_class_sources =
+        cpp_parsing::extract_top_level_enum_classes(custom_type_extraction_settings.header_file_path);
 
-    std::vector<MetaType> extracted_types = {};
+    std::cout << "about to iterate over " << enum_class_sources.size() << " many enum sources " << std::endl;
+    for (const auto &enum_class_source : enum_class_sources) {
+        std::cout << enum_class_source << std::endl;
 
+        // TODO: in the future I need to incorporate the settings filter in here to not get all types
+        auto me = meta_utils::create_meta_enum_from_source(enum_class_source);
+
+        meta_utils::MetaType custom_mt = construct_enum_metatype(me, meta_utils::meta_types);
+        meta_utils::MetaInclude mi(custom_type_extraction_settings.header_file_path);
+        custom_mt.includes_required.push_back(mi);
+
+        // NOTE: this is really important, as types are added in they may rely on previous ones, and thus we have to
+        // register types as we go forward iteratively
+        meta_utils::meta_types.add_new_concrete_type(custom_mt);
+    }
+
+    // NOTE: splitting into two loops might breaks the internal assumption in the loop fix when it's an issue
     for (const auto &class_source : class_sources) {
 
         // TODO: in the future I need to incorporate the settings filter in here to not get all types
@@ -1081,8 +1203,6 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
         meta_utils::MetaType custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
         meta_utils::MetaInclude mi(custom_type_extraction_settings.header_file_path);
         custom_mt.includes_required.push_back(mi);
-
-        extracted_types.push_back(custom_mt);
 
         // NOTE: this is really important, as types are added in they may rely on previous ones, and thus we have to
         // register types as we go forward iteratively
