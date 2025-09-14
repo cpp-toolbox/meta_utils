@@ -392,6 +392,156 @@ meta_utils::MetaClass create_meta_class_from_source(const std::string &source) {
     return mc;
 }
 
+meta_utils::MetaClass create_meta_struct_from_source(const std::string &source) {
+    std::cout << "[create_meta_struct_from_source] BEGIN\n";
+    std::cout << "[source]\n" << source << "\n";
+
+    // 1) parse (struct parser instead of class parser)
+    auto pr = cpp_parsing::struct_def_parser_good->parse(source, 0);
+    std::cout << "[parse result]\n" << pr.to_string() << "\n";
+
+    // 2) find struct name
+    const cpp_parsing::ParseResult *struct_name_node = nullptr;
+    struct_name_node = cpp_parsing::find_first_by_name(&pr, "variable");
+    if (!struct_name_node)
+        struct_name_node = cpp_parsing::find_first_by_name(&pr, "identifier");
+
+    std::string struct_name =
+        struct_name_node ? text_utils::trim(cpp_parsing::node_text(struct_name_node)) : std::string("UnnamedStruct");
+    std::cout << "[struct name] " << struct_name << "\n";
+
+    meta_utils::MetaClass mc(struct_name);
+
+    // 3) find nested_braces
+    const cpp_parsing::ParseResult *nested = cpp_parsing::find_first_by_name(&pr, "nested_braces");
+    if (!nested) {
+        std::cerr << "[error] No nested_braces found — returning empty MetaClass for " << struct_name << "\n";
+        return mc;
+    }
+    std::cout << "[nested_braces found]\n" << nested->to_string() << "\n";
+
+    // 4) collect declarations
+    std::vector<const cpp_parsing::ParseResult *> declarations;
+    cpp_parsing::collect_by_name(nested, "declaration", declarations);
+    std::cout << "[declarations count] " << declarations.size() << "\n";
+
+    // Helpers: same as in class version
+    auto extract_type_text = [&](const cpp_parsing::ParseResult *decl_node) -> std::string {
+        const cpp_parsing::ParseResult *type_node = cpp_parsing::find_first_name_contains(decl_node, "type");
+        if (!type_node)
+            type_node = cpp_parsing::find_first_by_name(decl_node, "non_templated_type");
+        if (!type_node)
+            type_node = cpp_parsing::find_first_by_name(decl_node, "sequence");
+        if (type_node) {
+            std::string txt = text_utils::trim(cpp_parsing::node_text(type_node));
+            std::cout << "  [extract_type_text] found: '" << txt << "'\n";
+            return txt;
+        }
+        for (const auto &child : decl_node->sub_results) {
+            if (child.parser_name == "identifier" || child.parser_name == "variable")
+                break;
+            if (!text_utils::trim(child.match).empty()) {
+                std::string txt = text_utils::trim(child.match);
+                std::cout << "  [extract_type_text] fallback child match: '" << txt << "'\n";
+                return txt;
+            }
+        }
+        std::cout << "  [extract_type_text] defaulted to int\n";
+        return "int";
+    };
+
+    auto extract_variable_name = [&](const cpp_parsing::ParseResult *decl_node) -> std::string {
+        const cpp_parsing::ParseResult *var_node = find_first_by_name(decl_node, "variable");
+        if (!var_node)
+            var_node = find_first_by_name(decl_node, "identifier");
+        if (var_node) {
+            std::string txt = text_utils::trim(node_text(var_node));
+            std::cout << "  [extract_variable_name] found: '" << txt << "'\n";
+            return txt;
+        }
+        for (const auto &child : decl_node->sub_results) {
+            std::string t = text_utils::trim(child.match);
+            if (!t.empty() && std::isalpha((unsigned char)t[0])) {
+                std::cout << "  [extract_variable_name] heuristic: '" << t << "'\n";
+                return t;
+            }
+        }
+        std::cout << "  [extract_variable_name] defaulted to 'unnamed'\n";
+        return "unnamed";
+    };
+
+    auto extract_initializer = [&](const cpp_parsing::ParseResult *decl_node)
+        -> std::optional<std::pair<std::string, meta_utils::MetaVariable::InitStyle>> {
+        const cpp_parsing::ParseResult *assign_node = find_first_by_name(decl_node, "assignment");
+        if (assign_node) {
+            std::string rhs = text_utils::trim(node_text(assign_node));
+            std::cout << "  [extract_initializer] assignment: '" << rhs << "'\n";
+            return std::make_pair(rhs, meta_utils::MetaVariable::InitStyle::Assignment);
+        }
+        for (const auto &child : decl_node->sub_results) {
+            if (text_utils::trim(child.match) == "=") {
+                std::string rhs;
+                bool started = false;
+                for (const auto &sibling : decl_node->sub_results) {
+                    if (!started) {
+                        if (&sibling == &child)
+                            started = true;
+                        continue;
+                    }
+                    std::string t = text_utils::trim(sibling.match);
+                    if (t == ";")
+                        break;
+                    if (!rhs.empty())
+                        rhs += " ";
+                    rhs += t;
+                }
+                if (!rhs.empty()) {
+                    std::cout << "  [extract_initializer] '=' rhs: '" << rhs << "'\n";
+                    return std::make_pair(rhs, meta_utils::MetaVariable::InitStyle::Assignment);
+                }
+            }
+            if (child.match.find('{') != std::string::npos) {
+                std::string body = text_utils::trim(node_text(&child));
+                std::cout << "  [extract_initializer] brace: '" << body << "'\n";
+                return std::make_pair(body, meta_utils::MetaVariable::InitStyle::Brace);
+            }
+        }
+        std::cout << "  [extract_initializer] none\n";
+        return std::nullopt;
+    };
+
+    // 5) iterate declarations
+    for (size_t i = 0; i < declarations.size(); ++i) {
+        const cpp_parsing::ParseResult *decl = declarations[i];
+        std::cout << "\n[declaration " << i << "]\n" << decl->to_string() << "\n";
+
+        std::string type_text = extract_type_text(decl);
+        std::string var_name = extract_variable_name(decl);
+
+        std::string value_text;
+        meta_utils::MetaVariable::InitStyle init_style = meta_utils::MetaVariable::InitStyle::Assignment;
+
+        auto maybe_init = extract_initializer(decl);
+        if (maybe_init) {
+            value_text = maybe_init->first;
+            init_style = maybe_init->second;
+        } else {
+            value_text = "{}";
+            init_style = meta_utils::MetaVariable::InitStyle::Assignment;
+        }
+
+        std::cout << "[final variable] type='" << type_text << "' name='" << var_name << "' init='" << value_text
+                  << "'\n";
+
+        meta_utils::MetaVariable mv(type_text, var_name, value_text, init_style);
+        meta_utils::MetaAttribute ma(std::move(mv));
+        mc.add_attribute(ma);
+    }
+
+    std::cout << "[create_meta_struct_from_source] END\n";
+    return mc;
+}
+
 meta_utils::MetaEnum create_meta_enum_from_source(const std::string &source) {
     std::cout << "[create_meta_enum_from_source] BEGIN\n";
     std::cout << "[source]\n" << source << "\n";
@@ -1172,40 +1322,37 @@ std::string lambda_to_function(const std::string &lambda_str, const std::string 
 }
 
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings) {
+    auto root = cpp_parsing::parse_source_or_header_file(custom_type_extraction_settings.header_file_path);
 
-    // auto class_sources = cpp_parsing::extract_top_level_classes("src/custom_type.hpp");
-    auto class_sources = cpp_parsing::extract_top_level_classes(custom_type_extraction_settings.header_file_path);
-    auto enum_class_sources =
-        cpp_parsing::extract_top_level_enum_classes(custom_type_extraction_settings.header_file_path);
+    auto matches = cpp_parsing::bfs_collect_matches(&root, {cpp_parsing::class_def_parser->name,
+                                                            cpp_parsing::struct_def_parser->name,
+                                                            cpp_parsing::enum_class_def_parser->name});
 
-    std::cout << "about to iterate over " << enum_class_sources.size() << " many enum sources " << std::endl;
-    for (const auto &enum_class_source : enum_class_sources) {
-        std::cout << enum_class_source << std::endl;
+    std::cout << "about to iterate over " << matches.size() << " many matches" << std::endl;
 
-        // TODO: in the future I need to incorporate the settings filter in here to not get all types
-        auto me = meta_utils::create_meta_enum_from_source(enum_class_source);
+    for (const auto &[parser_name, source] : matches) {
+        std::cout << "Matched " << parser_name << ": " << source << std::endl;
 
-        meta_utils::MetaType custom_mt = construct_enum_metatype(me, meta_utils::meta_types);
+        meta_utils::MetaType custom_mt;
+
+        if (parser_name == cpp_parsing::enum_class_def_parser->name) {
+            auto me = meta_utils::create_meta_enum_from_source(source);
+            custom_mt = construct_enum_metatype(me, meta_utils::meta_types);
+        } else if (parser_name == cpp_parsing::class_def_parser->name) {
+            auto mc = meta_utils::create_meta_class_from_source(source);
+            custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
+        } else if (parser_name == cpp_parsing::struct_def_parser->name) {
+            auto mc = meta_utils::create_meta_struct_from_source(source);
+            custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
+        } else {
+            // Unknown type, skip
+            continue;
+        }
+
         meta_utils::MetaInclude mi(custom_type_extraction_settings.header_file_path);
         custom_mt.includes_required.push_back(mi);
 
-        // NOTE: this is really important, as types are added in they may rely on previous ones, and thus we have to
-        // register types as we go forward iteratively
-        meta_utils::meta_types.add_new_concrete_type(custom_mt);
-    }
-
-    // NOTE: splitting into two loops might breaks the internal assumption in the loop fix when it's an issue
-    for (const auto &class_source : class_sources) {
-
-        // TODO: in the future I need to incorporate the settings filter in here to not get all types
-        auto mc = meta_utils::create_meta_class_from_source(class_source);
-
-        meta_utils::MetaType custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
-        meta_utils::MetaInclude mi(custom_type_extraction_settings.header_file_path);
-        custom_mt.includes_required.push_back(mi);
-
-        // NOTE: this is really important, as types are added in they may rely on previous ones, and thus we have to
-        // register types as we go forward iteratively
+        // Iteratively register so later types can depend on earlier ones
         meta_utils::meta_types.add_new_concrete_type(custom_mt);
     }
 }

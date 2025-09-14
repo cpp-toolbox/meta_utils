@@ -1158,6 +1158,10 @@ class MetaTypes {
 inline MetaTypes meta_types;
 
 meta_utils::MetaClass create_meta_class_from_source(const std::string &source);
+// NOTE: this creates a class because I didn't feel it was necessary to create a MetaStruct yet, because a struct is
+// really a specific type of class, so in the meta world I consider a struct a class, but then if I want to write to
+// file we would lose the fact that it's a struct... consider this later when that's an issue.
+meta_utils::MetaClass create_meta_struct_from_source(const std::string &source);
 meta_utils::MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types);
 
 }; // namespace meta_utils
