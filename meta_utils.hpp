@@ -269,6 +269,11 @@ std::string create_vector_of_type_to_string_func(MetaType type_parameter);
 std::string create_vector_of_type_serialize_func(MetaType type_parameter);
 std::string create_vector_of_type_deserialize_func(MetaType type_parameter);
 
+std::string create_string_to_array_of_type_func(MetaType type_parameter, unsigned int size);
+std::string create_array_of_type_to_string_func(MetaType type_parameter, unsigned int size);
+std::string create_array_of_type_serialize_func(MetaType type_parameter, unsigned int size);
+std::string create_array_of_type_deserialize_func(MetaType type_parameter, unsigned int size);
+
 inline MetaType construct_vector_metatype(MetaType generic_type) {
     auto vector_of_type_to_string_func = create_vector_of_type_to_string_func(generic_type);
     auto string_to_vector_of_generic_type_func = create_string_to_vector_of_type_func(generic_type);
@@ -283,12 +288,50 @@ inline MetaType construct_vector_metatype(MetaType generic_type) {
                     regex_utils::any_char_greedy, {generic_type});
 }
 
+inline MetaType construct_array_metatype(MetaType generic_type, unsigned int size) {
+    auto array_of_type_to_string_func = create_array_of_type_to_string_func(generic_type, size);
+    auto string_to_array_of_generic_type_func = create_string_to_array_of_type_func(generic_type, size);
+    auto array_of_type_serialize_func = create_array_of_type_serialize_func(generic_type, size);
+    auto array_of_type_deserialize_func = create_array_of_type_deserialize_func(generic_type, size);
+
+    return MetaType("std::array",
+                    string_to_array_of_generic_type_func, // string → array<T, N>
+                    array_of_type_to_string_func,         // array<T, N> → string
+                    array_of_type_serialize_func,         // array<T, N> → bytes
+                    array_of_type_deserialize_func,       // bytes → array<T, N>
+                    regex_utils::any_char_greedy, {generic_type});
+}
+
 // NOTE: this is the only global state.
 inline std::vector<MetaType> concrete_types = {INT,   UNSIGNED_INT, UINT8_T, FLOAT, DOUBLE,
                                                SHORT, LONG,         STRING,  BOOL,  meta_type_type};
 
-inline std::unordered_map<std::string, std::function<MetaType(MetaType)>> generic_type_to_metatype_constructor = {
-    {"std::vector", [](MetaType mt) -> MetaType { return construct_vector_metatype(mt); }}};
+using TemplateParameter = std::variant<unsigned int, MetaType>;
+
+inline std::unordered_map<std::string, std::function<MetaType(std::vector<TemplateParameter>)>>
+    generic_type_to_metatype_constructor = {
+        // std::vector<T>
+        {"std::vector",
+         [](std::vector<TemplateParameter> template_parameters) -> MetaType {
+             if (template_parameters.size() != 1) {
+                 throw std::invalid_argument("std::vector requires exactly 1 template parameter");
+             }
+
+             const MetaType &element_type = std::get<MetaType>(template_parameters[0]);
+             return construct_vector_metatype(element_type);
+         }},
+
+        // std::array<T, N>
+        {"std::array", [](std::vector<TemplateParameter> template_parameters) -> MetaType {
+             if (template_parameters.size() != 2) {
+                 throw std::invalid_argument("std::array requires exactly 2 template parameters");
+             }
+
+             const MetaType &element_type = std::get<MetaType>(template_parameters[0]);
+             unsigned int size = std::get<unsigned int>(template_parameters[1]);
+
+             return construct_array_metatype(element_type, size);
+         }}};
 
 inline std::unordered_map<std::string, MetaType> create_type_name_to_meta_type_map(std::vector<MetaType> meta_types) {
     std::unordered_map<std::string, MetaType> map;
@@ -1133,7 +1176,7 @@ class MetaTypes {
     std::unordered_map<std::string, MetaType> concrete_type_name_to_meta_type =
         create_type_name_to_meta_type_map(concrete_types);
 
-    std::unordered_map<std::string, std::function<meta_utils::MetaType(meta_utils::MetaType)>>
+    std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<TemplateParameter>)>>
         generic_type_to_meta_type_constructor = meta_utils::generic_type_to_metatype_constructor;
 
   public:
@@ -1144,7 +1187,7 @@ class MetaTypes {
 
     const std::vector<MetaType> &get_concrete_types() const { return concrete_types; }
 
-    const std::unordered_map<std::string, std::function<meta_utils::MetaType(meta_utils::MetaType)>> &
+    const std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<TemplateParameter>)>> &
     get_generic_type_to_meta_type_constructor() const {
         return generic_type_to_meta_type_constructor;
     }
@@ -1156,6 +1199,8 @@ class MetaTypes {
 
 // TODO: remove this?
 inline MetaTypes meta_types;
+
+MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types = meta_utils::meta_types);
 
 meta_utils::MetaClass create_meta_class_from_source(const std::string &source);
 // NOTE: this creates a class because I didn't feel it was necessary to create a MetaStruct yet, because a struct is
