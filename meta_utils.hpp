@@ -1207,6 +1207,8 @@ meta_utils::MetaClass create_meta_class_from_source(const std::string &source);
 // really a specific type of class, so in the meta world I consider a struct a class, but then if I want to write to
 // file we would lose the fact that it's a struct... consider this later when that's an issue.
 meta_utils::MetaClass create_meta_struct_from_source(const std::string &source);
+meta_utils::MetaType create_meta_type_from_using(const std::string &source, const meta_utils::MetaTypes &types);
+
 meta_utils::MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types);
 
 }; // namespace meta_utils

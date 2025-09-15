@@ -515,6 +515,37 @@ meta_utils::MetaClass create_meta_struct_from_source(const std::string &source) 
                                                                "UnnamedStruct", "struct");
 }
 
+meta_utils::MetaType create_meta_type_from_using(const std::string &source, const meta_utils::MetaTypes &types) {
+    auto pr = cpp_parsing::using_statement_parser->parse(source, 0);
+
+    if (!pr.succeeded) {
+        throw std::runtime_error("Failed to parse using statement: " + source);
+    }
+
+    // Find alias name
+    auto alias_node = cpp_parsing::find_first_by_name(&pr, "variable");
+    if (!alias_node) {
+        throw std::runtime_error("Could not find alias name in using statement: " + source);
+    }
+    std::string alias_name = cpp_parsing::node_text(alias_node);
+
+    // Find the type (look for parser whose name contains "type")
+    auto type_node = cpp_parsing::find_first_name_contains(&pr, "type");
+    if (!type_node) {
+        throw std::runtime_error("Could not find type in using statement: " + source);
+    }
+    std::string type_str = cpp_parsing::node_text(type_node);
+
+    // Resolve type string
+    auto resolved_type = meta_utils::resolve_meta_type(type_str, types);
+
+    // Create alias MetaType
+    meta_utils::MetaType alias_mt = resolved_type;
+    alias_mt.base_type_name = alias_name; // alias overrides the underlying type name
+
+    return alias_mt;
+}
+
 meta_utils::MetaEnum create_meta_enum_from_source(const std::string &source) {
     std::cout << "[create_meta_enum_from_source] BEGIN\n";
     std::cout << "[source]\n" << source << "\n";
@@ -1295,9 +1326,13 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
 
     auto root = cpp_parsing::parse_source_or_header_file(custom_type_extraction_settings.header_file_path);
 
-    auto matches = cpp_parsing::bfs_collect_matches(&root, {cpp_parsing::class_def_parser->name,
-                                                            cpp_parsing::struct_def_parser->name,
-                                                            cpp_parsing::enum_class_def_parser->name});
+    std::cout << "registering result: " << std::endl;
+
+    std::cout << cpp_parsing::clean_parse_result(root).to_string() << std::endl;
+
+    auto matches = cpp_parsing::bfs_collect_matches(
+        &root, {cpp_parsing::class_def_parser->name, cpp_parsing::struct_def_parser->name,
+                cpp_parsing::enum_class_def_parser->name, cpp_parsing::using_statement_parser->name});
 
     std::cout << "about to iterate over " << matches.size() << " many matches" << std::endl;
 
@@ -1315,6 +1350,8 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
         } else if (parser_name == cpp_parsing::struct_def_parser->name) {
             auto mc = meta_utils::create_meta_struct_from_source(source);
             custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
+        } else if (parser_name == cpp_parsing::using_statement_parser->name) {
+            custom_mt = meta_utils::create_meta_type_from_using(source, meta_utils::meta_types);
         } else {
             // Unknown type, skip
             continue;
