@@ -40,6 +40,10 @@ class MetaInclude {
     Type type;
 };
 
+class MetaType;
+
+using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
+
 // NOTE: we can't use MetaFunctions in here because we get a cyclic dependency
 class MetaType {
   public:
@@ -57,23 +61,23 @@ class MetaType {
     // Optional pointer to underlying element type (e.g., for vector<T>)
     // also note that when something is generic, we talk about the version with
     // nullptr here, concrete types are when this is not a nullptr
-    std::vector<MetaType> element_types;
+    std::vector<MetaTemplateParameter> template_parameters;
 
     bool operator==(const MetaType &other) const {
         return base_type_name == other.base_type_name &&
                string_to_type_func_lambda == other.string_to_type_func_lambda &&
                type_to_string_func_lambda == other.type_to_string_func_lambda && literal_regex == other.literal_regex &&
-               element_types == other.element_types;
+               template_parameters == other.template_parameters;
     }
 
     MetaType() {}
     MetaType(std::string name, std::string string_to_type_func, std::string type_to_string_func,
              std::string serialize_type_func, std::string deserialize_type_func, std::string literal_regex,
-             const std::vector<MetaType> &element_types = {})
+             const std::vector<MetaTemplateParameter> &element_types = {})
         : base_type_name(std::move(name)), string_to_type_func_lambda(std::move(string_to_type_func)),
           type_to_string_func_lambda(std::move(type_to_string_func)), serialize_type_func_lambda(serialize_type_func),
           deserialize_type_func_lambda(deserialize_type_func), literal_regex(std::move(literal_regex)),
-          element_types(element_types) {
+          template_parameters(element_types) {
 
         std::set<std::string> variably_sized_types = {"std::vector", "std::string"};
         variably_sized = variably_sized_types.find(base_type_name) != variably_sized_types.end();
@@ -85,18 +89,28 @@ class MetaType {
 
   private:
     std::string get_type_name_rec(const MetaType &meta_type) const {
-        if (meta_type.element_types.empty()) {
+        if (meta_type.template_parameters.empty()) {
             return meta_type.base_type_name;
         }
 
         std::ostringstream oss;
         oss << meta_type.base_type_name << "<";
 
-        for (size_t i = 0; i < meta_type.element_types.size(); ++i) {
+        for (size_t i = 0; i < meta_type.template_parameters.size(); ++i) {
             if (i > 0) {
                 oss << ", ";
             }
-            oss << get_type_name_rec(meta_type.element_types[i]);
+
+            std::visit(
+                [&](auto &&param) {
+                    using T = std::decay_t<decltype(param)>;
+                    if constexpr (std::is_same_v<T, unsigned int>) {
+                        oss << param; // print integer literal directly
+                    } else if constexpr (std::is_same_v<T, MetaType>) {
+                        oss << get_type_name_rec(param); // recurse on nested type
+                    }
+                },
+                meta_type.template_parameters[i]);
         }
 
         oss << ">";
@@ -111,15 +125,26 @@ class MetaType {
         oss << "  type_to_string_func: " << meta_type.type_to_string_func_lambda << "\n";
         oss << "  literal_regex: " << meta_type.literal_regex << "\n";
 
-        if (!meta_type.element_types.empty()) {
+        if (!meta_type.template_parameters.empty()) {
             oss << "  element_types: [\n";
-            for (const auto &elem : meta_type.element_types) {
-                std::string elem_str = to_string_rec(elem);
-                std::istringstream iss(elem_str);
-                std::string line;
-                while (std::getline(iss, line)) {
-                    oss << "    " << line << "\n";
-                }
+            for (const auto &elem : meta_type.template_parameters) {
+                std::visit(
+                    [&](auto &&param) {
+                        using T = std::decay_t<decltype(param)>;
+                        std::string elem_str;
+                        if constexpr (std::is_same_v<T, unsigned int>) {
+                            elem_str = "unsigned int: " + std::to_string(param);
+                        } else if constexpr (std::is_same_v<T, MetaType>) {
+                            elem_str = to_string_rec(param); // recurse
+                        }
+
+                        std::istringstream iss(elem_str);
+                        std::string line;
+                        while (std::getline(iss, line)) {
+                            oss << "    " << line << "\n";
+                        }
+                    },
+                    elem);
             }
             oss << "  ]\n";
         } else {
@@ -275,8 +300,8 @@ std::string create_array_of_type_serialize_func(MetaType type_parameter, unsigne
 std::string create_array_of_type_deserialize_func(MetaType type_parameter, unsigned int size);
 
 inline MetaType construct_vector_metatype(MetaType generic_type) {
-    auto vector_of_type_to_string_func = create_vector_of_type_to_string_func(generic_type);
     auto string_to_vector_of_generic_type_func = create_string_to_vector_of_type_func(generic_type);
+    auto vector_of_type_to_string_func = create_vector_of_type_to_string_func(generic_type);
     auto vector_of_type_serialize_func = create_vector_of_type_serialize_func(generic_type);
     auto vector_of_type_deserialize_func = create_vector_of_type_deserialize_func(generic_type);
 
@@ -289,30 +314,30 @@ inline MetaType construct_vector_metatype(MetaType generic_type) {
 }
 
 inline MetaType construct_array_metatype(MetaType generic_type, unsigned int size) {
+    auto string_to_array_of_type_func = create_string_to_array_of_type_func(generic_type, size);
     auto array_of_type_to_string_func = create_array_of_type_to_string_func(generic_type, size);
-    auto string_to_array_of_generic_type_func = create_string_to_array_of_type_func(generic_type, size);
     auto array_of_type_serialize_func = create_array_of_type_serialize_func(generic_type, size);
     auto array_of_type_deserialize_func = create_array_of_type_deserialize_func(generic_type, size);
 
     return MetaType("std::array",
-                    string_to_array_of_generic_type_func, // string → array<T, N>
-                    array_of_type_to_string_func,         // array<T, N> → string
-                    array_of_type_serialize_func,         // array<T, N> → bytes
-                    array_of_type_deserialize_func,       // bytes → array<T, N>
-                    regex_utils::any_char_greedy, {generic_type});
+                    string_to_array_of_type_func,   // string → array<T, N>
+                    array_of_type_to_string_func,   // array<T, N> → string
+                    array_of_type_serialize_func,   // array<T, N> → bytes
+                    array_of_type_deserialize_func, // bytes → array<T, N>
+                    regex_utils::any_char_greedy, {generic_type, size});
 }
 
 // NOTE: this is the only global state.
 inline std::vector<MetaType> concrete_types = {INT,   UNSIGNED_INT, UINT8_T, FLOAT, DOUBLE,
                                                SHORT, LONG,         STRING,  BOOL,  meta_type_type};
 
-using TemplateParameter = std::variant<unsigned int, MetaType>;
+using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
-inline std::unordered_map<std::string, std::function<MetaType(std::vector<TemplateParameter>)>>
+inline std::unordered_map<std::string, std::function<MetaType(std::vector<MetaTemplateParameter>)>>
     generic_type_to_metatype_constructor = {
         // std::vector<T>
         {"std::vector",
-         [](std::vector<TemplateParameter> template_parameters) -> MetaType {
+         [](std::vector<MetaTemplateParameter> template_parameters) -> MetaType {
              if (template_parameters.size() != 1) {
                  throw std::invalid_argument("std::vector requires exactly 1 template parameter");
              }
@@ -322,7 +347,7 @@ inline std::unordered_map<std::string, std::function<MetaType(std::vector<Templa
          }},
 
         // std::array<T, N>
-        {"std::array", [](std::vector<TemplateParameter> template_parameters) -> MetaType {
+        {"std::array", [](std::vector<MetaTemplateParameter> template_parameters) -> MetaType {
              if (template_parameters.size() != 2) {
                  throw std::invalid_argument("std::array requires exactly 2 template parameters");
              }
@@ -402,20 +427,51 @@ class MetaFunctionSignature {
     }
 
     MetaFunctionSignature() {};
+
     MetaFunctionSignature(const std::string &input, const std::string &name_space) : name_space(name_space) {
-
         auto cleaned_input = text_utils::join_multiline(input);
-        static const std::regex signature_regex(regex_utils::function_signature_re);
-        // static const std::regex signature_regexx(
-        //     regex_utils::start_of_line + regex_utils::optional_ws +
-        //     regex_utils::capture(regex_utils::one_or_more(regex_utils::type_char_class)) +
-        //     regex_utils::one_or_more_ws + regex_utils::capture(regex_utils::word) + regex_utils::optional_ws +
-        //     regex_utils::wrap_parentheses(
-        //         regex_utils::capture(regex_utils::zero_or_more(regex_utils::negated_character_class({")"})))) +
-        //     regex_utils::optional_ws + regex_utils::end_of_line);
-        std::smatch match;
-        if (!std::regex_match(cleaned_input, match, signature_regex)) {
+        std::string s = trim(cleaned_input);
 
+        // --- Try to parse as a regular function ---
+        bool parsed_regular = false;
+        std::string local_return_type, local_name, local_param_list;
+
+        try {
+            // Find parameters
+            auto param_end = s.rfind(')');
+            if (param_end == std::string::npos) {
+                throw std::invalid_argument("Function signature missing closing ')'");
+            }
+
+            auto param_start = s.rfind('(', param_end);
+            if (param_start == std::string::npos) {
+                throw std::invalid_argument("Function signature missing opening '('");
+            }
+
+            local_param_list = s.substr(param_start + 1, param_end - param_start - 1);
+            std::string ret_and_name = trim(s.substr(0, param_start));
+
+            // Split into return type and name
+            auto last_space = ret_and_name.rfind(' ');
+            if (last_space == std::string::npos) {
+                throw std::invalid_argument("Cannot determine function name and return type");
+            }
+
+            local_return_type = trim(ret_and_name.substr(0, last_space));
+            local_name = ret_and_name.substr(last_space + 1);
+
+            parsed_regular = true;
+        } catch (const std::invalid_argument &) {
+            // fallthrough to constructor logic
+        }
+
+        if (parsed_regular) {
+            return_type = local_return_type;
+            name = local_name;
+            param_list = local_param_list;
+        } else {
+            // --- Fall back to constructor logic (unchanged) ---
+            std::smatch match;
             static const std::regex constructor_regex(regex_utils::constructor_signature_re);
             if (!std::regex_match(cleaned_input, match, constructor_regex)) {
                 throw std::invalid_argument("Invalid function signature format: expected "
@@ -425,14 +481,10 @@ class MetaFunctionSignature {
                 return_type = get_fully_qualified_name(*this);
                 param_list = match[2];
             }
-        } else { // regular function
-            return_type = match[1];
-            name = match[2];
-            param_list = match[3];
         }
 
+        // --- Common parameter handling ---
         std::vector<std::string> param_tokens = split_comma_separated(param_list);
-
         for (const std::string &param_str : param_tokens) {
             if (!param_str.empty()) {
                 parameters.emplace_back(param_str);
@@ -476,11 +528,71 @@ class MetaFunctionSignature {
   private:
     static std::vector<std::string> split_comma_separated(const std::string &input) {
         std::vector<std::string> result;
-        std::istringstream ss(input);
-        std::string token;
-        while (std::getline(ss, token, ',')) {
-            result.push_back(token);
+        std::string current;
+
+        int angle_depth = 0;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        bool in_single_quote = false;
+        bool in_double_quote = false;
+
+        for (size_t i = 0; i < input.size(); ++i) {
+            char c = input[i];
+
+            // handle quotes
+            if (c == '\'' && !in_double_quote) {
+                in_single_quote = !in_single_quote;
+                current.push_back(c);
+                continue;
+            }
+            if (c == '"' && !in_single_quote) {
+                in_double_quote = !in_double_quote;
+                current.push_back(c);
+                continue;
+            }
+
+            // if inside quotes, just copy
+            if (in_single_quote || in_double_quote) {
+                current.push_back(c);
+                continue;
+            }
+
+            // track nesting
+            if (c == '<')
+                angle_depth++;
+            else if (c == '>' && angle_depth > 0)
+                angle_depth--;
+            else if (c == '(')
+                paren_depth++;
+            else if (c == ')' && paren_depth > 0)
+                paren_depth--;
+            else if (c == '[')
+                bracket_depth++;
+            else if (c == ']' && bracket_depth > 0)
+                bracket_depth--;
+            else if (c == '{')
+                brace_depth++;
+            else if (c == '}' && brace_depth > 0)
+                brace_depth--;
+
+            // split only on commas at top-level
+            if (c == ',' && angle_depth == 0 && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                // flush current token
+                std::string trimmed = text_utils::trim(current);
+                if (!trimmed.empty())
+                    result.push_back(trimmed);
+                current.clear();
+            } else {
+                current.push_back(c);
+            }
         }
+
+        // flush last token
+        std::string trimmed = text_utils::trim(current);
+        if (!trimmed.empty())
+            result.push_back(trimmed);
+
         return result;
     }
 
@@ -537,19 +649,55 @@ class MetaFunction {
         : signature(signature), body(body), name_space(name_space) {};
 
     MetaFunction(const std::string &func_str, const std::string &name_space = "") : name_space(name_space) {
-
-        static const std::regex function_regex(R"(([\w:<>()]+)\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*)\})");
-
-        std::smatch match;
-        if (!std::regex_search(func_str, match, function_regex)) {
-            throw std::invalid_argument("Function string is not a valid function definition");
+        // Find the opening '{' that starts the body
+        auto body_start = func_str.find('{');
+        if (body_start == std::string::npos) {
+            throw std::invalid_argument("Function string missing body");
         }
 
-        std::string header_signature = match[1].str() + " " + match[2].str() + "(" + match[3].str() + ")";
-        signature = MetaFunctionSignature(header_signature, name_space);
+        // Split header and body
+        std::string header = func_str.substr(0, body_start);
+        auto body_end = func_str.rfind('}');
+        std::string body_str = func_str.substr(body_start + 1, body_end - body_start - 1);
+        body_str = trim(body_str); // Assuming you have a trim function
 
-        std::string trimmed_body = MetaFunction::trim(match[4]);
-        body.add_multiline(trimmed_body);
+        // Add the body to the body object
+        body.add_multiline(body_str);
+
+        // --- Parse header right-to-left ---
+        header = trim(header);
+
+        // Find the last ')' to get end of parameters
+        auto param_end = header.rfind(')');
+        if (param_end == std::string::npos) {
+            throw std::invalid_argument("Function header missing closing ')'");
+        }
+
+        // Find the matching '(' for parameters
+        auto param_start = header.rfind('(', param_end);
+        if (param_start == std::string::npos) {
+            throw std::invalid_argument("Function header missing opening '('");
+        }
+
+        // Extract parameter list
+        std::string param_list = header.substr(param_start + 1, param_end - param_start - 1);
+
+        // Everything before '(' is "<return_type_and_name>"
+        std::string ret_and_name = trim(header.substr(0, param_start));
+
+        // Find the last whitespace in ret_and_name: function name is after it, return type is before it
+        auto last_space = ret_and_name.rfind(' ');
+        if (last_space == std::string::npos) {
+            throw std::invalid_argument("Cannot determine function name and return type");
+        }
+
+        std::string func_name = ret_and_name.substr(last_space + 1);
+        std::string return_type = trim(ret_and_name.substr(0, last_space));
+
+        std::string header_signature = return_type + " " + func_name + "(" + param_list + ")";
+        std::cout << "parsed header: " << header_signature << std::endl;
+
+        signature = MetaFunctionSignature(header_signature, name_space);
     }
 
     std::string to_lambda_string() const {
@@ -1176,7 +1324,7 @@ class MetaTypes {
     std::unordered_map<std::string, MetaType> concrete_type_name_to_meta_type =
         create_type_name_to_meta_type_map(concrete_types);
 
-    std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<TemplateParameter>)>>
+    std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<MetaTemplateParameter>)>>
         generic_type_to_meta_type_constructor = meta_utils::generic_type_to_metatype_constructor;
 
   public:
@@ -1187,7 +1335,7 @@ class MetaTypes {
 
     const std::vector<MetaType> &get_concrete_types() const { return concrete_types; }
 
-    const std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<TemplateParameter>)>> &
+    const std::unordered_map<std::string, std::function<meta_utils::MetaType(std::vector<MetaTemplateParameter>)>> &
     get_generic_type_to_meta_type_constructor() const {
         return generic_type_to_meta_type_constructor;
     }
@@ -1222,7 +1370,6 @@ inline void hash_combine(std::size_t &seed, std::size_t value) noexcept {
 namespace std {
 template <> struct hash<meta_utils::MetaType> {
     size_t operator()(const meta_utils::MetaType &mt) const noexcept {
-
         size_t seed = 0;
 
         // Hash each string member
@@ -1232,8 +1379,17 @@ template <> struct hash<meta_utils::MetaType> {
         hash_combine(seed, std::hash<std::string>{}(mt.literal_regex));
 
         // Hash vector elements recursively
-        for (const meta_utils::MetaType &elem : mt.element_types) {
-            hash_combine(seed, std::hash<meta_utils::MetaType>{}(elem));
+        for (const auto &elem : mt.template_parameters) {
+            std::visit(
+                [&](auto &&param) {
+                    using T = std::decay_t<decltype(param)>;
+                    if constexpr (std::is_same_v<T, unsigned int>) {
+                        hash_combine(seed, std::hash<unsigned int>{}(param));
+                    } else if constexpr (std::is_same_v<T, meta_utils::MetaType>) {
+                        hash_combine(seed, std::hash<meta_utils::MetaType>{}(param));
+                    }
+                },
+                elem);
         }
 
         return seed;
