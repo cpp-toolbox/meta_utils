@@ -13,6 +13,7 @@
 #include <vector>
 #include <functional>
 #include <cstddef> // for size_t
+#include <variant>
 
 #include "sbpt_generated_includes.hpp"
 
@@ -189,6 +190,43 @@ inline MetaType UINT8_T =
              "  return v; }",
              regex_utils::unsigned_int_regex);
 
+inline MetaType UINT32_T =
+    MetaType("uint32_t", "[](const std::string &s) { return static_cast<uint32_t>(std::stoul(s)); }",
+             create_to_string_lambda("uint32_t"),
+             "[](const uint32_t &v) { "
+             "  std::vector<uint8_t> buf(sizeof(uint32_t)); "
+             "  std::memcpy(buf.data(), &v, sizeof(uint32_t)); "
+             "  return buf; }",
+             "[](const std::vector<uint8_t> &buf) { "
+             "  uint32_t v; "
+             "  std::memcpy(&v, buf.data(), sizeof(uint32_t)); "
+             "  return v; }",
+             regex_utils::unsigned_int_regex);
+
+inline MetaType SIZE_T = MetaType("size_t", "[](const std::string &s) { return static_cast<size_t>(std::stoull(s)); }",
+                                  create_to_string_lambda("size_t"),
+                                  "[](const size_t &v) { "
+                                  "  std::vector<uint8_t> buf(sizeof(size_t)); "
+                                  "  std::memcpy(buf.data(), &v, sizeof(size_t)); "
+                                  "  return buf; }",
+                                  "[](const std::vector<uint8_t> &buf) { "
+                                  "  size_t v; "
+                                  "  std::memcpy(&v, buf.data(), sizeof(size_t)); "
+                                  "  return v; }",
+                                  regex_utils::unsigned_int_regex);
+
+inline MetaType CHAR = MetaType("char", "[](const std::string &s) { return static_cast<char>(s.empty() ? 0 : s[0]); }",
+                                create_to_string_lambda("char"),
+                                "[](const char &v) { "
+                                "  std::vector<uint8_t> buf(sizeof(char)); "
+                                "  std::memcpy(buf.data(), &v, sizeof(char)); "
+                                "  return buf; }",
+                                "[](const std::vector<uint8_t> &buf) { "
+                                "  char v; "
+                                "  std::memcpy(&v, buf.data(), sizeof(char)); "
+                                "  return v; }",
+                                regex_utils::char_literal);
+
 inline MetaType INT =
     MetaType("int", "[](const std::string &s) { return std::stoi(s); }", create_to_string_lambda("int"),
              "[](const int &v) { "
@@ -328,8 +366,8 @@ inline MetaType construct_array_metatype(MetaType generic_type, unsigned int siz
 }
 
 // NOTE: this is the only global state.
-inline std::vector<MetaType> concrete_types = {INT,   UNSIGNED_INT, UINT8_T, FLOAT, DOUBLE,
-                                               SHORT, LONG,         STRING,  BOOL,  meta_type_type};
+inline std::vector<MetaType> concrete_types = {CHAR,   INT,   UNSIGNED_INT, UINT8_T, UINT32_T, SIZE_T,        FLOAT,
+                                               DOUBLE, SHORT, LONG,         STRING,  BOOL,     meta_type_type};
 
 using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
@@ -1284,6 +1322,7 @@ struct CustomTypeExtractionSettings {
     meta_utils::FilterMode mode;
 };
 
+void register_custom_types_into_meta_types(const std::vector<CustomTypeExtractionSettings> &settings_list);
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings);
 
 struct StringInvokerGenerationSettingsForHeaderSource {
