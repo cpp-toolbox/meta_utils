@@ -1,6 +1,5 @@
 #include "meta_utils.hpp"
 #include <filesystem>
-#include <fmt/base.h>
 #include <iostream>
 #include <optional>
 #include <tuple>
@@ -21,7 +20,8 @@ MetaParameter::MetaParameter(const std::string &input) {
     // - single space
     // - variable name (word characters)
     // - optional default assignment
-    static const std::regex param_re(R"(^\s*(.+?[\s*&]+)\s*(\w+)(\s*=.*)?$)");
+
+    static const std::regex param_re(R"(^\s*(.+?)\s+([*&]*\w+)(\s*=.*)?$)");
 
     std::smatch match;
     if (!std::regex_match(input, match, param_re)) {
@@ -547,6 +547,9 @@ meta_utils::MetaType create_meta_type_from_using(const std::string &source, cons
     // Create alias MetaType
     meta_utils::MetaType alias_mt = resolved_type;
     alias_mt.base_type_name = alias_name; // alias overrides the underlying type name
+
+    // we clear this because we don't want it to print out, because it's an alias.
+    alias_mt.template_parameters.clear();
 
     return alias_mt;
 }
@@ -1400,6 +1403,11 @@ std::string lambda_to_function(const std::string &lambda_str, const std::string 
     std::ostringstream oss;
     oss << actual_return << " " << func_name << "(" << params_str << ") {\n" << body_str << "\n}";
     return oss.str();
+}
+void register_custom_types_into_meta_types(const std::vector<CustomTypeExtractionSettings> &settings_list) {
+    for (const auto &settings : settings_list) {
+        register_custom_types_into_meta_types(settings);
+    }
 }
 
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings) {
