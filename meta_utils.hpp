@@ -386,7 +386,7 @@ inline MetaType construct_array_metatype(MetaType generic_type, unsigned int siz
                     array_of_type_serialize_func,       // array<T, N> → bytes
                     array_of_type_serialized_size_func, // array<T, N> → size in bytes
                     array_of_type_deserialize_func,     // bytes → array<T, N>
-                    regex_utils::any_char_greedy, {generic_type});
+                    regex_utils::any_char_greedy, {generic_type, size});
 }
 
 // NOTE: this is the only global state.
