@@ -520,6 +520,7 @@ meta_utils::MetaClass create_meta_struct_from_source(const std::string &source) 
 }
 
 meta_utils::MetaType create_meta_type_from_using(const std::string &source, const meta_utils::MetaTypes &types) {
+
     auto pr = cpp_parsing::using_statement_parser->parse(source, 0);
 
     if (!pr.succeeded) {
@@ -603,6 +604,20 @@ meta_utils::MetaEnum create_meta_enum_from_source(const std::string &source) {
     return me;
 }
 
+std::unordered_map<char, char> replacement_map = {{':', '_'}, {' ', '_'}};
+std::string to_string_function_name(const std::string &type) {
+    return text_utils::replace_chars(type, replacement_map) + "_to_string";
+}
+std::string from_string_function_name(const std::string &type) {
+    return "string_to_" + text_utils::replace_chars(type, replacement_map);
+}
+std::string serialize_function_name(const std::string &type) {
+    return "serialize_" + text_utils::replace_chars(type, replacement_map);
+}
+std::string deserialize_function_name(const std::string &type) {
+    return "deserialize_" + text_utils::replace_chars(type, replacement_map);
+}
+
 MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) {
     text_utils::MultilineStringAccumulator to_string_func;
     text_utils::MultilineStringAccumulator from_string_func;
@@ -628,8 +643,12 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
         const auto &attr = cls.attributes[i];
         auto meta = resolve_meta_type(attr.variable.type, types);
 
+        // TODO: need to reuse previous functions one day
         to_string_func.add("    { auto conv = ", meta.type_to_string_func_lambda, ";");
         to_string_func.add("      oss << \"", attr.variable.name, "=\" << conv(obj.", attr.variable.name, "); }");
+        //
+        // to_string_func.add("    { oss << \"", attr.variable.name, "=\" << ",
+        //                    to_string_function_name(meta.base_type_name), "(obj.", attr.variable.name, "); }");
 
         if (i + 1 < cls.attributes.size())
             to_string_func.add("    oss << \", \";");
@@ -1514,17 +1533,11 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
             meta_program_mcc.includes_required_for_declaration.push_back(include.str(output_header_dir));
         }
 
-        std::unordered_map<char, char> replacement_map = {{':', '_'}, {' ', '_'}};
-
         std::vector<Helper> func_sources = {
-            {mt.type_to_string_func_lambda,
-             text_utils::replace_chars(mt.base_type_name, replacement_map) + "_to_string", "std::string"},
-            {mt.string_to_type_func_lambda,
-             "string_to_" + text_utils::replace_chars(mt.base_type_name, replacement_map), mt.base_type_name},
-            {mt.serialize_type_func_lambda,
-             "serialize_" + text_utils::replace_chars(mt.base_type_name, replacement_map), "std::vector<uint8_t>"},
-            {mt.deserialize_type_func_lambda,
-             "deserialize_" + text_utils::replace_chars(mt.base_type_name, replacement_map), mt.base_type_name}};
+            {mt.type_to_string_func_lambda, to_string_function_name(mt.base_type_name), "std::string"},
+            {mt.string_to_type_func_lambda, from_string_function_name(mt.base_type_name), mt.base_type_name},
+            {mt.serialize_type_func_lambda, serialize_function_name(mt.base_type_name), "std::vector<uint8_t>"},
+            {mt.deserialize_type_func_lambda, deserialize_function_name(mt.base_type_name), mt.base_type_name}};
 
         for (const auto &[lambda_source, func_name, return_type] : func_sources) {
             std::cout << lambda_source << std::endl;
