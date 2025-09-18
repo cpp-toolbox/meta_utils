@@ -52,6 +52,10 @@ class MetaType {
     std::string string_to_type_func_lambda;
     std::string type_to_string_func_lambda;
     std::string serialize_type_func_lambda;
+    // NOTE: this has to exist, because sometimes you have a struct that when serialized only uses up 5 bytes, but if
+    // you use the sizeof operator on it it would return 8, this is due to padding, which is not present in the
+    // serialized state
+    std::string size_when_serialized_bytes_func_lambda;
     std::string deserialize_type_func_lambda;
     std::string literal_regex;
 
@@ -73,10 +77,12 @@ class MetaType {
 
     MetaType() {}
     MetaType(std::string name, std::string string_to_type_func, std::string type_to_string_func,
-             std::string serialize_type_func, std::string deserialize_type_func, std::string literal_regex,
+             std::string serialize_type_func, std::string size_when_serialized_bytes_func,
+             std::string deserialize_type_func, std::string literal_regex,
              const std::vector<MetaTemplateParameter> &element_types = {})
         : base_type_name(std::move(name)), string_to_type_func_lambda(std::move(string_to_type_func)),
           type_to_string_func_lambda(std::move(type_to_string_func)), serialize_type_func_lambda(serialize_type_func),
+          size_when_serialized_bytes_func_lambda(size_when_serialized_bytes_func),
           deserialize_type_func_lambda(deserialize_type_func), literal_regex(std::move(literal_regex)),
           template_parameters(element_types) {
 
@@ -171,6 +177,7 @@ inline MetaType UNSIGNED_INT =
              "  std::vector<uint8_t> buf(sizeof(unsigned int)); "
              "  std::memcpy(buf.data(), &v, sizeof(unsigned int)); "
              "  return buf; }",
+             "[](const unsigned int &v) { return sizeof(unsigned int); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  unsigned int v; "
              "  std::memcpy(&v, buf.data(), sizeof(unsigned int)); "
@@ -184,6 +191,7 @@ inline MetaType UINT8_T =
              "  std::vector<uint8_t> buf(sizeof(uint8_t)); "
              "  std::memcpy(buf.data(), &v, sizeof(uint8_t)); "
              "  return buf; }",
+             "[](const uint8_t &v) { return sizeof(uint8_t); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  uint8_t v; "
              "  std::memcpy(&v, buf.data(), sizeof(uint8_t)); "
@@ -197,6 +205,7 @@ inline MetaType UINT32_T =
              "  std::vector<uint8_t> buf(sizeof(uint32_t)); "
              "  std::memcpy(buf.data(), &v, sizeof(uint32_t)); "
              "  return buf; }",
+             "[](const uint32_t &v) { return sizeof(uint32_t); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  uint32_t v; "
              "  std::memcpy(&v, buf.data(), sizeof(uint32_t)); "
@@ -209,6 +218,7 @@ inline MetaType SIZE_T = MetaType("size_t", "[](const std::string &s) { return s
                                   "  std::vector<uint8_t> buf(sizeof(size_t)); "
                                   "  std::memcpy(buf.data(), &v, sizeof(size_t)); "
                                   "  return buf; }",
+                                  "[](const size_t &v) { return sizeof(size_t); }",
                                   "[](const std::vector<uint8_t> &buf) { "
                                   "  size_t v; "
                                   "  std::memcpy(&v, buf.data(), sizeof(size_t)); "
@@ -221,6 +231,7 @@ inline MetaType CHAR = MetaType("char", "[](const std::string &s) { return stati
                                 "  std::vector<uint8_t> buf(sizeof(char)); "
                                 "  std::memcpy(buf.data(), &v, sizeof(char)); "
                                 "  return buf; }",
+                                "[](const char &v) { return sizeof(char); }",
                                 "[](const std::vector<uint8_t> &buf) { "
                                 "  char v; "
                                 "  std::memcpy(&v, buf.data(), sizeof(char)); "
@@ -233,6 +244,7 @@ inline MetaType INT =
              "  std::vector<uint8_t> buf(sizeof(int)); "
              "  std::memcpy(buf.data(), &v, sizeof(int)); "
              "  return buf; }",
+             "[](const int &v) { return sizeof(int); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  int v; "
              "  std::memcpy(&v, buf.data(), sizeof(int)); "
@@ -245,6 +257,7 @@ inline MetaType SHORT = MetaType("short", "[](const std::string &s) { return sta
                                  "  std::vector<uint8_t> buf(sizeof(short)); "
                                  "  std::memcpy(buf.data(), &v, sizeof(short)); "
                                  "  return buf; }",
+                                 "[](const short &v) { return sizeof(short); }",
                                  "[](const std::vector<uint8_t> &buf) { "
                                  "  short v; "
                                  "  std::memcpy(&v, buf.data(), sizeof(short)); "
@@ -257,6 +270,7 @@ inline MetaType LONG =
              "  std::vector<uint8_t> buf(sizeof(long)); "
              "  std::memcpy(buf.data(), &v, sizeof(long)); "
              "  return buf; }",
+             "[](const long &v) { return sizeof(long); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  long v; "
              "  std::memcpy(&v, buf.data(), sizeof(long)); "
@@ -269,6 +283,7 @@ inline MetaType FLOAT =
              "  std::vector<uint8_t> buf(sizeof(float)); "
              "  std::memcpy(buf.data(), &v, sizeof(float)); "
              "  return buf; }",
+             "[](const float &v) { return sizeof(float); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  float v; "
              "  std::memcpy(&v, buf.data(), sizeof(float)); "
@@ -281,6 +296,7 @@ inline MetaType DOUBLE =
              "  std::vector<uint8_t> buf(sizeof(double)); "
              "  std::memcpy(buf.data(), &v, sizeof(double)); "
              "  return buf; }",
+             "[](const double &v) { return sizeof(double); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  double v; "
              "  std::memcpy(&v, buf.data(), sizeof(double)); "
@@ -289,7 +305,6 @@ inline MetaType DOUBLE =
 
 inline MetaType STRING =
     MetaType("std::string", "[](const std::string &s) { return s; }", "[](const std::string &s) { return s; }",
-             // --- serialize ---
              "[](const std::string &v) { "
              "  std::vector<uint8_t> buf; "
              "  size_t len = v.size(); "
@@ -297,7 +312,7 @@ inline MetaType STRING =
              "  std::memcpy(buf.data(), &len, sizeof(size_t)); "
              "  std::memcpy(buf.data() + sizeof(size_t), v.data(), len); "
              "  return buf; }",
-             // --- deserialize ---
+             "[](const std::string &v) { return sizeof(size_t) + v.size(); }",
              "[](const std::vector<uint8_t> &buf) { "
              "  if (buf.size() < sizeof(size_t)) return std::string(); "
              "  size_t len; "
@@ -312,12 +327,15 @@ inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == 
                                 "  std::vector<uint8_t> buf(1); "
                                 "  buf[0] = v ? 1 : 0; "
                                 "  return buf; }",
+                                // NOTE: we don't use sizeof(bool) because of how we serialize always one byte.
+                                "[](const bool &v) { return sizeof(uint8_t); }",
                                 "[](const std::vector<uint8_t> &buf) { "
                                 "  return buf[0] != 0; }",
                                 R"(true|false|1|0)");
 
-inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[](){ return \"\";}", "[](){}", "[](){}",
-                                           "MetaType");
+inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[](){ return \"\";}", "[](){}",
+                                           "[](const meta_utils::MetaType &v) { return sizeof(meta_utils::MetaType); }",
+                                           "[](){}", "MetaType");
 
 // GENERICS
 // NOTE: generic types cannot be defined directly as variables, there are
@@ -330,23 +348,27 @@ inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[]
 std::string create_string_to_vector_of_type_func(MetaType type_parameter);
 std::string create_vector_of_type_to_string_func(MetaType type_parameter);
 std::string create_vector_of_type_serialize_func(MetaType type_parameter);
+std::string create_vector_of_type_serialized_size_func(MetaType type_parameter);
 std::string create_vector_of_type_deserialize_func(MetaType type_parameter);
 
 std::string create_string_to_array_of_type_func(MetaType type_parameter, unsigned int size);
 std::string create_array_of_type_to_string_func(MetaType type_parameter, unsigned int size);
 std::string create_array_of_type_serialize_func(MetaType type_parameter, unsigned int size);
+std::string create_array_of_type_serialized_size_func(MetaType type_parameter, unsigned int size);
 std::string create_array_of_type_deserialize_func(MetaType type_parameter, unsigned int size);
 
 inline MetaType construct_vector_metatype(MetaType generic_type) {
     auto string_to_vector_of_generic_type_func = create_string_to_vector_of_type_func(generic_type);
     auto vector_of_type_to_string_func = create_vector_of_type_to_string_func(generic_type);
     auto vector_of_type_serialize_func = create_vector_of_type_serialize_func(generic_type);
+    auto vector_of_type_serialized_size_func = create_vector_of_type_serialized_size_func(generic_type);
     auto vector_of_type_deserialize_func = create_vector_of_type_deserialize_func(generic_type);
 
     return MetaType("std::vector",
                     string_to_vector_of_generic_type_func, // string → vector<T>
                     vector_of_type_to_string_func,         // vector<T> → string
                     vector_of_type_serialize_func,         // vector<T> → bytes
+                    vector_of_type_serialized_size_func,   // vector<T> → size in bytes
                     vector_of_type_deserialize_func,       // bytes → vector<T>
                     regex_utils::any_char_greedy, {generic_type});
 }
@@ -355,14 +377,16 @@ inline MetaType construct_array_metatype(MetaType generic_type, unsigned int siz
     auto string_to_array_of_type_func = create_string_to_array_of_type_func(generic_type, size);
     auto array_of_type_to_string_func = create_array_of_type_to_string_func(generic_type, size);
     auto array_of_type_serialize_func = create_array_of_type_serialize_func(generic_type, size);
+    auto array_of_type_serialized_size_func = create_array_of_type_serialized_size_func(generic_type, size);
     auto array_of_type_deserialize_func = create_array_of_type_deserialize_func(generic_type, size);
 
     return MetaType("std::array",
-                    string_to_array_of_type_func,   // string → array<T, N>
-                    array_of_type_to_string_func,   // array<T, N> → string
-                    array_of_type_serialize_func,   // array<T, N> → bytes
-                    array_of_type_deserialize_func, // bytes → array<T, N>
-                    regex_utils::any_char_greedy, {generic_type, size});
+                    string_to_array_of_type_func,       // string → array<T, N>
+                    array_of_type_to_string_func,       // array<T, N> → string
+                    array_of_type_serialize_func,       // array<T, N> → bytes
+                    array_of_type_serialized_size_func, // array<T, N> → size in bytes
+                    array_of_type_deserialize_func,     // bytes → array<T, N>
+                    regex_utils::any_char_greedy, {generic_type});
 }
 
 // NOTE: this is the only global state.

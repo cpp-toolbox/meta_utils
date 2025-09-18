@@ -21,6 +21,7 @@ MetaParameter::MetaParameter(const std::string &input) {
     // - variable name (word characters)
     // - optional default assignment
 
+    // NOTE: in the future we will do away with this regex
     static const std::regex param_re(R"(^\s*(.+?)\s+([*&]*\w+)(\s*=.*)?$)");
 
     std::smatch match;
@@ -158,6 +159,32 @@ std::string create_vector_of_type_serialize_func(MetaType type_parameter) {
     return msa.str();
 }
 
+std::string create_vector_of_type_serialized_size_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::vector<", type_parameter.get_type_name(), ">& vec) -> size_t {");
+    msa.add("    size_t total_size = sizeof(size_t); // space for storing count");
+
+    auto element_size_lambda = type_parameter.size_when_serialized_bytes_func_lambda;
+
+    if (type_parameter.variably_sized) {
+        msa.add("    auto element_size_func = ", element_size_lambda, ";");
+        msa.add("    for (const auto& elem : vec) {");
+        msa.add("        size_t elem_size = element_size_func(elem);");
+        msa.add("        total_size += sizeof(size_t) + elem_size; // size prefix + data");
+        msa.add("    }");
+    } else {
+        msa.add("    if (!vec.empty()) {");
+        msa.add("        total_size += vec.size() * ", element_size_lambda, "(vec[0]);");
+        msa.add("    }");
+    }
+
+    msa.add("    return total_size;");
+    msa.add("}");
+
+    return msa.str();
+}
+
 std::string create_vector_of_type_deserialize_func(MetaType type_parameter) {
     text_utils::MultilineStringAccumulator msa;
 
@@ -285,6 +312,33 @@ std::string create_array_of_type_serialize_func(MetaType type_parameter, unsigne
     }
 
     msa.add("    return buffer;");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_array_of_type_serialized_size_func(MetaType type_parameter, unsigned int size) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::array<", type_parameter.get_type_name(), ", ", std::to_string(size), ">& arr) -> size_t {");
+    msa.add("    size_t total_size = 0;");
+
+    auto element_size_lambda = type_parameter.size_when_serialized_bytes_func_lambda;
+
+    if (type_parameter.variably_sized) {
+        // variable-size inner type
+        msa.add("    for (const auto& elem : arr) {");
+        msa.add("        total_size += sizeof(size_t); // store element size prefix");
+        msa.add("        total_size += ", element_size_lambda, "(elem);");
+        msa.add("    }");
+    } else {
+        // fixed-size inner type
+        msa.add("    if (!arr.empty()) {");
+        msa.add("        total_size += arr.size() * ", element_size_lambda, "(arr[0]);");
+        msa.add("    }");
+    }
+
+    msa.add("    return total_size;");
     msa.add("}");
 
     return msa.str();
@@ -617,6 +671,11 @@ std::string from_string_function_name(const std::string &type) {
 std::string serialize_function_name(const std::string &type) {
     return "serialize_" + text_utils::replace_chars(type, replacement_map);
 }
+
+std::string size_when_serialized_function_name(const std::string &type) {
+    return "size_when_serialized_" + text_utils::replace_chars(type, replacement_map);
+}
+
 std::string deserialize_function_name(const std::string &type) {
     return "deserialize_" + text_utils::replace_chars(type, replacement_map);
 }
@@ -626,6 +685,7 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     text_utils::MultilineStringAccumulator from_string_func;
     text_utils::MultilineStringAccumulator serialize_func;
     text_utils::MultilineStringAccumulator deserialize_func;
+    text_utils::MultilineStringAccumulator size_func;
 
     bool variably_sized = false;
 
@@ -684,8 +744,6 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     from_string_func.add("    return obj;");
     from_string_func.add("}");
 
-    // NOTE: read this if it doesn't make sense: https://toolbox.cuppajoeman.com/programming/serialization.html
-
     // ---------- Serialize ----------
     serialize_func.add("[=](const ", cls.name, "& obj) -> std::vector<uint8_t> {");
     serialize_func.add("    std::vector<uint8_t> buffer;");
@@ -731,8 +789,9 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
             deserialize_func.add("      obj.", attr.variable.name, " = deser(slice);");
             deserialize_func.add("      offset += len;");
         } else {
-            // fixed-size: slice exactly sizeof(attribute)
-            deserialize_func.add("      size_t len = sizeof(obj.", attr.variable.name, ");");
+            // fixed-size: use MetaType's serialized size func
+            deserialize_func.add("      auto size_fn = ", meta.size_when_serialized_bytes_func_lambda, ";");
+            deserialize_func.add("      size_t len = size_fn(obj.", attr.variable.name, ");");
             deserialize_func.add("      if (offset + len > buffer.size()) return obj;");
             deserialize_func.add(
                 "      std::vector<uint8_t> slice(buffer.begin() + offset, buffer.begin() + offset + len);");
@@ -746,7 +805,23 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     deserialize_func.add("    return obj;");
     deserialize_func.add("}");
 
-    auto mt = MetaType(cls.name, from_string_func.str(), to_string_func.str(), serialize_func.str(),
+    // ---------- Size When Serialized ----------
+    size_func.add("[=](const ", cls.name, "& obj) -> size_t {");
+    size_func.add("    size_t total = 0;");
+    for (const auto &attr : cls.attributes) {
+        auto meta = resolve_meta_type(attr.variable.type, types);
+        size_func.add("    { auto size_fn = ", meta.size_when_serialized_bytes_func_lambda, ";");
+        if (meta.variably_sized) {
+            size_func.add("      total += sizeof(size_t); // length prefix");
+            size_func.add("      total += size_fn(obj.", attr.variable.name, "); }");
+        } else {
+            size_func.add("      total += size_fn(obj.", attr.variable.name, "); }");
+        }
+    }
+    size_func.add("    return total;");
+    size_func.add("}");
+
+    auto mt = MetaType(cls.name, from_string_func.str(), to_string_func.str(), serialize_func.str(), size_func.str(),
                        deserialize_func.str(), regex_utils::any_char_greedy, {});
     mt.variably_sized = variably_sized;
     return mt;
@@ -757,6 +832,7 @@ MetaType construct_enum_metatype(const MetaEnum &enu, const MetaTypes &types) {
     text_utils::MultilineStringAccumulator from_string_func;
     text_utils::MultilineStringAccumulator serialize_func;
     text_utils::MultilineStringAccumulator deserialize_func;
+    text_utils::MultilineStringAccumulator size_func;
 
     std::string fq_enum_name = enu.name; // e.g., "PacketType"
     std::string underlying = enu.type.empty() ? "int" : enu.type;
@@ -798,8 +874,13 @@ MetaType construct_enum_metatype(const MetaEnum &enu, const MetaTypes &types) {
     deserialize_func.add("    return static_cast<", fq_enum_name, ">(raw);");
     deserialize_func.add("}");
 
+    // ---------- Size When Serialized ----------
+    size_func.add("[=](const ", fq_enum_name, " &obj) -> size_t {");
+    size_func.add("    return sizeof(", underlying, ");");
+    size_func.add("}");
+
     auto mt = MetaType(fq_enum_name, from_string_func.str(), to_string_func.str(), serialize_func.str(),
-                       deserialize_func.str(), regex_utils::any_char_greedy, {});
+                       size_func.str(), deserialize_func.str(), regex_utils::any_char_greedy, {});
     mt.variably_sized = false;
     return mt;
 }
@@ -1545,6 +1626,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
             {mt.type_to_string_func_lambda, to_string_function_name(mt.base_type_name), "std::string"},
             {mt.string_to_type_func_lambda, from_string_function_name(mt.base_type_name), mt.base_type_name},
             {mt.serialize_type_func_lambda, serialize_function_name(mt.base_type_name), "std::vector<uint8_t>"},
+            {mt.size_when_serialized_bytes_func_lambda, size_when_serialized_function_name(mt.base_type_name),
+             "size_t"},
             {mt.deserialize_type_func_lambda, deserialize_function_name(mt.base_type_name), mt.base_type_name}};
 
         for (const auto &[lambda_source, func_name, return_type] : func_sources) {
