@@ -304,7 +304,12 @@ inline MetaType DOUBLE =
              regex_utils::float_regex);
 
 inline MetaType STRING =
-    MetaType("std::string", "[](const std::string &s) { return s; }", "[](const std::string &s) { return s; }",
+    MetaType("std::string",
+             "[](const std::string &s) { "
+             "  if (s.size() >= 2 && s.front() == '\"' && s.back() == '\"') "
+             "    return s.substr(1, s.size() - 2); "
+             "  return s; }",
+             "[](const std::string &s) { return s; }",
              "[](const std::string &v) { "
              "  std::vector<uint8_t> buf; "
              "  size_t len = v.size(); "
@@ -321,8 +326,8 @@ inline MetaType STRING =
              "  return std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len); }",
              regex_utils::string_literal);
 
-inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\" || s == \"1\"; }",
-                                create_to_string_lambda("bool"),
+inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\"; }",
+                                "[](const bool &v) { return v ? \"true\" : \"false\"; }",
                                 "[](const bool &v) { "
                                 "  std::vector<uint8_t> buf(1); "
                                 "  buf[0] = v ? 1 : 0; "
@@ -795,7 +800,6 @@ class MetaFunction {
         std::string return_type = trim(ret_and_name.substr(0, last_space));
 
         std::string header_signature = return_type + " " + func_name + "(" + param_list + ")";
-        std::cout << "parsed header: " << header_signature << std::endl;
 
         signature = MetaFunctionSignature(header_signature, name_space);
     }
@@ -1334,10 +1338,8 @@ class MetaCodeCollection {
 
         std::vector<std::string> function_declarations =
             cpp_parsing::extract_top_level_function_declarations(hpp_file_path);
-        std::cout << "got " << function_declarations.size() << " many func decls" << std::endl;
 
         for (const std::string &func_decl : function_declarations) {
-            std::cout << "iterating on " << func_decl << std::endl;
 
             try {
 
@@ -1469,6 +1471,10 @@ struct CustomTypeExtractionSettings {
 void register_custom_types_into_meta_types(const std::vector<CustomTypeExtractionSettings> &settings_list);
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings);
 
+/**
+ * the top level invoker is an invoer that return std_string allowing all functions declared in the header to be called
+ * as we know what the return type is
+ */
 struct StringInvokerGenerationSettingsForHeaderSource {
     StringInvokerGenerationSettingsForHeaderSource(
         std::string header_file_path, std::string source_file_path, bool create_top_level_invoker = false,
