@@ -1599,6 +1599,28 @@ std::string generate_string_invoker_for_function_collection_that_has_same_return
     return oss.str();
 }
 
+MetaFunction
+create_list_all_available_functions(std::vector<MetaCodeCollection> &generated_mcc_for_each_header_source_pair) {
+    text_utils::MultilineStringAccumulator msa;
+    msa.add("void list_all_available_functions() {");
+
+    for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
+        std::string ns_label = mcc.name_space.empty() ? "<global>" : mcc.name_space;
+        msa.add("    std::cout << \"--- Functions in namespace: " + ns_label + " ---\" << std::endl;");
+
+        for (const auto &mc : mcc.classes) {
+            msa.add("    for (const auto &mfs : " + text_utils::pascal_to_snake_case(mc.name) +
+                    ".all_meta_function_signatures) {");
+            msa.add("        std::cout << mfs.to_string() << std::endl;");
+            msa.add("    }");
+        }
+    }
+
+    msa.add("}");
+
+    return MetaFunction(msa.str());
+}
+
 MetaFunction create_interactive_invoker() {
     text_utils::MultilineStringAccumulator msa;
 
@@ -1823,8 +1845,16 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
                                            const std::vector<MetaType> &all_types) {
 
-    auto output_header_path = "src/meta_program/meta_program.hpp";
-    auto output_source_path = "src/meta_program/meta_program.cpp";
+    std::string output_header_path = "src/meta_program/meta_program.hpp";
+    std::string output_source_path = "src/meta_program/meta_program.cpp";
+    std::vector<std::string> paths = {output_header_path, output_source_path};
+
+    bool there_is_a_bad_path = not collection_utils::all_of(
+        collection_utils::map_vector(paths, [](std::string s) { return fs_utils::path_exists(s); }));
+
+    if (there_is_a_bad_path) {
+        return;
+    }
 
     std::filesystem::path output_header_dir = std::filesystem::path(output_header_path).parent_path();
 
@@ -1962,6 +1992,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     meta_class.add_method(MetaMethod(create_interactive_invoker()));
 
+    meta_class.add_method(MetaMethod(create_list_all_available_functions(generated_mcc_for_each_header_source_pair)));
+
     MetaParameter vector_of_meta_types("std::vector<meta_utils::MetaType> concrete_types");
     MetaConstructor mc(meta_class.name, {vector_of_meta_types}, "", AccessSpecifier::Public,
                        {"concrete_types(concrete_types)"});
@@ -1971,6 +2003,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     MetaAttribute concrete_types_reference(concrete_types, AccessSpecifier::Public);
     meta_class.add_attribute(concrete_types_reference);
 
+    // NOTE: this adds each header pair mcc class to the meta program.
     for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
         // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit
         // sketchy

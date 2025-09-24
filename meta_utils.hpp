@@ -326,6 +326,68 @@ inline MetaType STRING =
              "  return std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len); }",
              regex_utils::string_literal);
 
+inline MetaType FILESYSTEM_PATH = MetaType(
+    "std::filesystem::path",
+    // from string → path
+    "[](const std::string &s) { "
+    "  if (s.size() >= 2 && s.front() == '\"' && s.back() == '\"') "
+    "    return std::filesystem::path(s.substr(1, s.size() - 2)); "
+    "  return std::filesystem::path(s); }",
+    // to string
+    "[](const std::filesystem::path &p) { return p.string(); }",
+    // to bytes
+    "[](const std::filesystem::path &p) { "
+    "  std::string s = p.string(); "
+    "  std::vector<uint8_t> buf; "
+    "  size_t len = s.size(); "
+    "  buf.resize(sizeof(size_t) + len); "
+    "  std::memcpy(buf.data(), &len, sizeof(size_t)); "
+    "  std::memcpy(buf.data() + sizeof(size_t), s.data(), len); "
+    "  return buf; }",
+    // size in bytes
+    "[](const std::filesystem::path &p) { "
+    "  std::string s = p.string(); "
+    "  return sizeof(size_t) + s.size(); }",
+    // from bytes → path
+    "[](const std::vector<uint8_t> &buf) { "
+    "  if (buf.size() < sizeof(size_t)) return std::filesystem::path(); "
+    "  size_t len; "
+    "  std::memcpy(&len, buf.data(), sizeof(size_t)); "
+    "  if (buf.size() < sizeof(size_t) + len) return std::filesystem::path(); "
+    "  return std::filesystem::path(std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len)); }",
+    regex_utils::string_literal);
+
+inline MetaType REGEX =
+    MetaType("std::regex",
+             // from string → regex
+             "[](const std::string &s) { "
+             "  if (s.size() >= 2 && s.front() == '\"' && s.back() == '\"') "
+             "    return std::regex(s.substr(1, s.size() - 2)); "
+             "  return std::regex(s); }",
+             // to string
+             "[](const std::regex &r) { return r.pattern(); }",
+             // to bytes
+             "[](const std::regex &r) { "
+             "  std::string pattern = r.pattern(); "
+             "  std::vector<uint8_t> buf; "
+             "  size_t len = pattern.size(); "
+             "  buf.resize(sizeof(size_t) + len); "
+             "  std::memcpy(buf.data(), &len, sizeof(size_t)); "
+             "  std::memcpy(buf.data() + sizeof(size_t), pattern.data(), len); "
+             "  return buf; }",
+             // size in bytes
+             "[](const std::regex &r) { "
+             "  std::string pattern = r.pattern(); "
+             "  return sizeof(size_t) + pattern.size(); }",
+             // from bytes → regex
+             "[](const std::vector<uint8_t> &buf) { "
+             "  if (buf.size() < sizeof(size_t)) return std::regex(); "
+             "  size_t len; "
+             "  std::memcpy(&len, buf.data(), sizeof(size_t)); "
+             "  if (buf.size() < sizeof(size_t) + len) return std::regex(); "
+             "  return std::regex(std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len)); }",
+             regex_utils::string_literal);
+
 inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == \"true\"; }",
                                 "[](const bool &v) { return v ? \"true\" : \"false\"; }",
                                 "[](const bool &v) { "
@@ -418,8 +480,9 @@ inline MetaType construct_unordered_map_metatype(MetaType key_type, MetaType val
 }
 
 // NOTE: this is the only global state.
-inline std::vector<MetaType> concrete_types = {CHAR,   INT,   UNSIGNED_INT, UINT8_T, UINT32_T, SIZE_T,        FLOAT,
-                                               DOUBLE, SHORT, LONG,         STRING,  BOOL,     meta_type_type};
+inline std::vector<MetaType> concrete_types = {CHAR,  INT,    UNSIGNED_INT,  UINT8_T, UINT32_T, SIZE_T,
+                                               FLOAT, DOUBLE, SHORT,         LONG,    STRING,   FILESYSTEM_PATH,
+                                               REGEX, BOOL,   meta_type_type};
 
 using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
