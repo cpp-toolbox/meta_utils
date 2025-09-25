@@ -570,6 +570,17 @@ MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types) 
         }
     }
 
+    {
+        // NOTE: when the type used is one that has not be registered into the meta program system then we create this.
+        // In general I don't know if this is the right approach as this logic only exists so that we can create a meta
+        // function signature without having to care about any other info...
+        // auto placeholder = "UNREGISTERED_TYPE";
+        // MetaType non_registered_type(type_str, placeholder, placeholder, placeholder, placeholder, placeholder,
+        //                              placeholder);
+        //
+        // return non_registered_type;
+    }
+
     throw std::runtime_error("Unknown type in MetaTypes: " + type_str);
 }
 

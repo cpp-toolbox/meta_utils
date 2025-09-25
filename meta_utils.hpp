@@ -357,6 +357,8 @@ inline MetaType FILESYSTEM_PATH = MetaType(
     "  return std::filesystem::path(std::string(reinterpret_cast<const char*>(buf.data() + sizeof(size_t)), len)); }",
     regex_utils::string_literal);
 
+// TODO: .pattern() isn't a real function so we can't get the pattern out of a regex and I don't have a way to deal with
+// this yet. This is why you don't find regex in concrete types.
 inline MetaType REGEX =
     MetaType("std::regex",
              // from string → regex
@@ -480,9 +482,9 @@ inline MetaType construct_unordered_map_metatype(MetaType key_type, MetaType val
 }
 
 // NOTE: this is the only global state.
-inline std::vector<MetaType> concrete_types = {CHAR,  INT,    UNSIGNED_INT,  UINT8_T, UINT32_T, SIZE_T,
-                                               FLOAT, DOUBLE, SHORT,         LONG,    STRING,   FILESYSTEM_PATH,
-                                               REGEX, BOOL,   meta_type_type};
+inline std::vector<MetaType> concrete_types = {CHAR,  INT,           UNSIGNED_INT, UINT8_T, UINT32_T, SIZE_T,
+                                               FLOAT, DOUBLE,        SHORT,        LONG,    STRING,   FILESYSTEM_PATH,
+                                               BOOL,  meta_type_type};
 
 using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
@@ -1227,14 +1229,8 @@ class MetaCodeCollection {
 
         name_space = extract_top_level_namespace(cpp_source).value_or("");
 
-        std::vector<MetaFunctionSignature> signatures_to_filter_on;
-        for (const auto &str : string_signatures_to_filter_on) {
-            MetaFunctionSignature mfs(str, name_space);
-            signatures_to_filter_on.push_back(mfs);
-        }
-
-        extract_functions(cpp_file_path, name_space, signatures_to_filter_on, mode);
-        extract_function_signatures(header_file_path, name_space, signatures_to_filter_on, mode);
+        // extract_functions(cpp_file_path, name_space, signatures_to_filter_on, mode);
+        extract_function_signatures(header_file_path, name_space, string_signatures_to_filter_on, mode);
     }
 
     void write_to_header_and_source(const std::string &header_file_path, const std::string &cpp_file_path) {
@@ -1395,7 +1391,7 @@ class MetaCodeCollection {
     }
 
     void extract_function_signatures(const std::string &hpp_file_path, const std::string &name_space,
-                                     const std::vector<MetaFunctionSignature> &signatures_to_filter, FilterMode mode) {
+                                     const std::vector<std::string> &string_signatures_to_filter_on, FilterMode mode) {
 
         bool namespace_wrapped = name_space != "";
 
@@ -1406,21 +1402,29 @@ class MetaCodeCollection {
 
             try {
 
-                std::string cleaned_func_decl = text_utils::trim(func_decl);
-                if (not cleaned_func_decl.empty() and cleaned_func_decl.back() == ';') {
-                    cleaned_func_decl.pop_back();
-                }
+                auto clean_func_decl = [](const std::string &s) -> std::string {
+                    auto result = text_utils::trim(s);
+                    if (result.back() == ';') {
+                        result.pop_back();
+                    }
+                    result = text_utils::trim(result);
+                    text_utils::remove_consecutive_duplicates(result);
+                    return result;
+                };
 
-                MetaFunctionSignature mfs(cleaned_func_decl, name_space);
-
-                bool match_found = std::any_of(signatures_to_filter.begin(), signatures_to_filter.end(),
-                                               [&](const MetaFunctionSignature &fs) { return fs == mfs; });
+                bool match_found = std::any_of(
+                    string_signatures_to_filter_on.begin(), string_signatures_to_filter_on.end(),
+                    [&](const std::string &fs) { return clean_func_decl(fs) == clean_func_decl(func_decl); });
 
                 bool allowed = (mode == FilterMode::Whitelist)   ? match_found
                                : (mode == FilterMode::Blacklist) ? !match_found
                                                                  : true;
 
                 if (allowed) {
+                    // NOTE: we only ever construct a meta function signature if its not blocked, helps deal with the
+                    // problem when there is a type which you don't handle yet and you use the filter to explicitly
+                    // block it.
+                    MetaFunctionSignature mfs(clean_func_decl(func_decl), name_space);
                     declared_function_signatures_in_header_file.push_back(std::move(mfs));
                 }
             } catch (const std::exception &e) {
@@ -1429,34 +1433,35 @@ class MetaCodeCollection {
         }
     }
 
-    void extract_functions(const std::string &cpp_file_path, const std::string &name_space,
-                           const std::vector<MetaFunctionSignature> &signatures_to_filter, FilterMode mode) {
-
-        bool namespace_wrapped = name_space != "";
-
-        std::vector<std::string> function_strings = cpp_parsing::extract_top_level_functions(cpp_file_path);
-
-        for (const std::string &func_str : function_strings) {
-
-            try {
-                MetaFunction mf(func_str, name_space);
-                const auto &sig = mf.signature;
-
-                bool match_found = std::any_of(signatures_to_filter.begin(), signatures_to_filter.end(),
-                                               [&](const MetaFunctionSignature &fs) { return fs == sig; });
-
-                bool allowed = (mode == FilterMode::Whitelist)   ? match_found
-                               : (mode == FilterMode::Blacklist) ? !match_found
-                                                                 : true;
-
-                if (allowed) {
-                    functions.push_back(std::move(mf));
-                }
-            } catch (const std::exception &e) {
-                std::cout << "invalid func\n" << func_str << std::endl;
-            }
-        }
-    }
+    // void extract_functions(const std::string &cpp_file_path, const std::string &name_space,
+    //                        const std::vector<std::string> &strings_signatures_to_filter_on, FilterMode mode) {
+    //
+    //     bool namespace_wrapped = name_space != "";
+    //
+    //     std::vector<std::string> function_strings = cpp_parsing::extract_top_level_functions(cpp_file_path);
+    //
+    //     for (const std::string &func_str : function_strings) {
+    //
+    //         try {
+    //             MetaFunction mf(func_str, name_space);
+    //             const auto &sig = mf.signature;
+    //
+    //             bool match_found =
+    //                 std::any_of(strings_signatures_to_filter_on.begin(), strings_signatures_to_filter_on.end(),
+    //                             [&](const MetaFunctionSignature &fs) { return fs == sig; });
+    //
+    //             bool allowed = (mode == FilterMode::Whitelist)   ? match_found
+    //                            : (mode == FilterMode::Blacklist) ? !match_found
+    //                                                              : true;
+    //
+    //             if (allowed) {
+    //                 functions.push_back(std::move(mf));
+    //             }
+    //         } catch (const std::exception &e) {
+    //             std::cout << "invalid func\n" << func_str << std::endl;
+    //         }
+    //     }
+    // }
 
     std::optional<std::string> extract_top_level_namespace(const std::string &source_code) {
         std::regex namespace_regex(R"(\bnamespace\s+(\w+)\s*\{)");
