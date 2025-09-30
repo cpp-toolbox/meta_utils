@@ -1632,94 +1632,98 @@ create_list_all_available_functions(std::vector<MetaCodeCollection> &generated_m
     return MetaFunction(msa.str());
 }
 
-MetaFunction create_interactive_invoker() {
+MetaFunction create_interactive_invoker(std::vector<MetaCodeCollection> &generated_mcc_for_each_header_source_pair) {
     text_utils::MultilineStringAccumulator msa;
 
     msa.add("void start_interactive_invoker() {");
 
-    msa.add("std::map<std::string, meta_utils::MetaFunctionSignature> options_dict;");
-    // TODO: fix hardcode here
-    msa.add("    for (size_t i = 0; i < meta_text_utils.all_meta_function_signatures.size(); ++i) {");
-    msa.add("    options_dict[std::to_string(i + 1)] = meta_text_utils.all_meta_function_signatures[i];");
-    msa.add("}");
+    msa.add("    std::map<std::string, meta_utils::MetaFunctionSignature> options_dict;");
+    msa.add("    size_t option_index = 1;");
 
-    msa.add("if (options_dict.empty()) {");
-    msa.add("    std::cout << \"No functions available.\" << std::endl;");
-    msa.add("    return; // nothing to do");
-    msa.add("}");
+    for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
+        for (const auto &mc : mcc.classes) {
+            std::string class_var = text_utils::pascal_to_snake_case(mc.name);
+            msa.add("    for (const auto &mfs : " + class_var + ".all_meta_function_signatures) {");
+            msa.add("        options_dict[std::to_string(option_index++)] = mfs;");
+            msa.add("    }");
+        }
+    }
 
-    msa.add("std::vector<std::pair<std::string, meta_utils::MetaFunctionSignature>> "
+    msa.add("    if (options_dict.empty()) {");
+    msa.add("        std::cout << \"No functions available.\" << std::endl;");
+    msa.add("        return; // nothing to do");
+    msa.add("    }");
+
+    msa.add("    std::vector<std::pair<std::string, meta_utils::MetaFunctionSignature>> "
             "sorted_options(options_dict.begin(), options_dict.end());");
 
-    msa.add("std::sort(sorted_options.begin(), sorted_options.end(), [](const auto &a, const auto &b) { return "
+    msa.add("    std::sort(sorted_options.begin(), sorted_options.end(), [](const auto &a, const auto &b) { return "
             "std::stoi(a.first) < std::stoi(b.first); });");
 
-    msa.add("bool keep_running = true;");
+    msa.add("    bool keep_running = true;");
 
-    msa.add("while (keep_running) {");
-    msa.add("    std::cout << \"Select a function to invoke:\" << std::endl;;");
-    msa.add("    for (const auto &[key, func] : sorted_options) {");
-    msa.add("        std::cout << key << \". \" << func.to_string() << std::endl;");
-    msa.add("    }");
+    msa.add("    while (keep_running) {");
+    msa.add("        std::cout << \"Select a function to invoke:\" << std::endl;");
+    msa.add("        for (const auto &[key, func] : sorted_options) {");
+    msa.add("            std::cout << key << \". \" << func.to_string() << std::endl;");
+    msa.add("        }");
+    msa.add("        std::cout << \"q. Quit\" << std::endl;");
 
-    msa.add("    std::cout << \"q. Quit\" << std::endl;");
-
-    msa.add("    std::string choice = get_validated_input( []() {");
-    msa.add("        std::cout << \"Enter choice: \";");
-    msa.add("        std::string s;");
-    msa.add("        std::getline(std::cin, s);");
-    msa.add("        return text_utils::trim(s);");
-    msa.add("    },");
-    msa.add("    [&](const std::string &input) { return input == \"q\" || options_dict.find(input) != "
+    msa.add("        std::string choice = get_validated_input( []() {");
+    msa.add("            std::cout << \"Enter choice: \";");
+    msa.add("            std::string s;");
+    msa.add("            std::getline(std::cin, s);");
+    msa.add("            return text_utils::trim(s);");
+    msa.add("        },");
+    msa.add("        [&](const std::string &input) { return input == \"q\" || options_dict.find(input) != "
             "options_dict.end(); }, \"Invalid choice. Please try again.\");");
 
-    msa.add("    if (choice == \"q\") {");
-    msa.add("        std::cout << \"Goodbye.\" << std::endl;");
-    msa.add("        break;");
-    msa.add("}");
-
-    msa.add("    meta_utils::MetaFunctionSignature selected = options_dict[choice];");
-
-    msa.add("    std::vector<std::string> args;");
-    msa.add("    for (const auto &param : selected.parameters) {");
-    msa.add("        std::string val = get_input_with_default(\"Enter value for \" + param.name + \" (\" + "
-            "param.type.get_type_name() + \")\", \"0\");");
-    msa.add("        args.push_back(val);");
-    msa.add("    }");
-
-    msa.add("    std::string invocation = selected.name + \"(\";");
-    msa.add("    for (size_t i = 0; i < args.size(); ++i) {");
-    msa.add("        invocation += args[i];");
-    msa.add("        if (i < args.size() - 1) {");
-    msa.add("            invocation += \", \";");
+    msa.add("        if (choice == \"q\") {");
+    msa.add("            std::cout << \"Goodbye.\" << std::endl;");
+    msa.add("            break;");
     msa.add("        }");
-    msa.add("    }");
-    msa.add("    invocation += \")\";");
 
-    msa.add("    std::cout << \"about to run: \" << invocation << std::endl;");
-    msa.add("    auto result = invoker_that_returns_std_string(invocation);");
-    msa.add("    if (result.has_value()) {");
-    msa.add("        std::cout << \"Result: \" << result.value() << std::endl;");
-    msa.add("    } else {");
-    msa.add("        std::cout << \"Invocation failed.\" << std::endl;");
-    msa.add("    }");
+    msa.add("        meta_utils::MetaFunctionSignature selected = options_dict[choice];");
 
-    msa.add("    std::string run_again = get_validated_input(");
-    msa.add("    []() {");
-    msa.add("        std::cout << \"Do you want to run another function? (y/n): \";");
-    msa.add("        std::string s;");
-    msa.add("        std::getline(std::cin, s);");
-    msa.add("        return text_utils::trim(s);");
-    msa.add("    },");
-    msa.add("    [](const std::string &input) { return input == \"y\" || input == \"n\"; }, \"Please enter 'y' or "
+    msa.add("        std::vector<std::string> args;");
+    msa.add("        for (const auto &param : selected.parameters) {");
+    msa.add("            std::string val = get_input_with_default(\"Enter value for \" + param.name + \" (\" + "
+            "param.type.get_type_name() + \")\", \"0\");");
+    msa.add("            args.push_back(val);");
+    msa.add("        }");
+
+    msa.add("        std::string invocation = selected.name + \"(\";");
+    msa.add("        for (size_t i = 0; i < args.size(); ++i) {");
+    msa.add("            invocation += args[i];");
+    msa.add("            if (i < args.size() - 1) {");
+    msa.add("                invocation += \", \";");
+    msa.add("            }");
+    msa.add("        }");
+    msa.add("        invocation += \")\";");
+
+    msa.add("        std::cout << \"about to run: \" << invocation << std::endl;");
+    msa.add("        auto result = invoker_that_returns_std_string(invocation);");
+    msa.add("        if (result.has_value()) {");
+    msa.add("            std::cout << \"Result: \" << result.value() << std::endl;");
+    msa.add("        } else {");
+    msa.add("            std::cout << \"Invocation failed.\" << std::endl;");
+    msa.add("        }");
+
+    msa.add("        std::string run_again = get_validated_input(");
+    msa.add("        []() {");
+    msa.add("            std::cout << \"Do you want to run another function? (y/n): \";");
+    msa.add("            std::string s;");
+    msa.add("            std::getline(std::cin, s);");
+    msa.add("            return text_utils::trim(s);");
+    msa.add("        },");
+    msa.add("        [](const std::string &input) { return input == \"y\" || input == \"n\"; }, \"Please enter 'y' or "
             "'n'.\");");
 
-    msa.add("    if (run_again == \"n\") {");
-    msa.add("        keep_running = false;");
-    msa.add("        std::cout << \"Goodbye.\" << std::endl;");
+    msa.add("        if (run_again == \"n\") {");
+    msa.add("            keep_running = false;");
+    msa.add("            std::cout << \"Goodbye.\" << std::endl;");
+    msa.add("        }");
     msa.add("    }");
-
-    msa.add("}");
     msa.add("}");
 
     MetaFunction mf(msa.str());
@@ -2001,7 +2005,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_invokers_that_return_it);
     create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_deferred_invokers_that_return_it);
 
-    meta_class.add_method(MetaMethod(create_interactive_invoker()));
+    meta_class.add_method(MetaMethod(create_interactive_invoker(generated_mcc_for_each_header_source_pair)));
 
     meta_class.add_method(MetaMethod(create_list_all_available_functions(generated_mcc_for_each_header_source_pair)));
 
