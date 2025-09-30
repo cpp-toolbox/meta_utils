@@ -1886,6 +1886,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     std::vector<MetaCodeCollection> generated_mcc_for_each_header_source_pair;
 
+    bool created_any_string_invokers = not settings.empty();
     for (const auto &setting : settings) {
         std::string meta_code_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
                                      fs_utils::get_filename_from_path(setting.header_file_path);
@@ -2005,7 +2006,9 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_invokers_that_return_it);
     create_func_that_sequentially_tries_funcs_that_return_opt(return_type_to_deferred_invokers_that_return_it);
 
-    meta_class.add_method(MetaMethod(create_interactive_invoker(generated_mcc_for_each_header_source_pair)));
+    if (created_any_string_invokers) {
+        meta_class.add_method(MetaMethod(create_interactive_invoker(generated_mcc_for_each_header_source_pair)));
+    }
 
     meta_class.add_method(MetaMethod(create_list_all_available_functions(generated_mcc_for_each_header_source_pair)));
 
