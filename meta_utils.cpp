@@ -1883,7 +1883,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     for (const auto &setting : settings) {
         std::string meta_code_path = fs_utils::get_containing_directory(setting.header_file_path) + "/meta/" +
                                      fs_utils::get_filename_from_path(setting.header_file_path);
-        std::string rel_path = fs_utils::get_relative_path(output_header_dir, meta_code_path);
+        std::string rel_path = fs_utils::get_relative_path(output_header_dir, meta_code_path).string();
         auto rel_include = "#include \"" + rel_path + "\"";
         header_paths_of_other_string_invokers.push_back(rel_include);
         // NOTE: important call
@@ -1960,10 +1960,10 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         meta_program_mcc.includes_required_for_declaration, header_paths_of_other_string_invokers);
     meta_program_mcc.includes_required_for_declaration.push_back(optional_include);
     meta_program_mcc.includes_required_for_declaration.push_back(
-        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp")));
+        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp").string()));
     meta_program_mcc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
     meta_program_mcc.includes_required_for_declaration.push_back(
-        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp")));
+        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp").string()));
 
     auto create_func_that_sequentially_tries_funcs_that_return_opt =
         [&](std::unordered_map<std::string, std::vector<ObjectFunction>> &return_type_to_invokers_that_return_it) {
@@ -2089,7 +2089,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     auto rel_glm_printing_path = fs_utils::get_relative_path(output_dir, "src/utility/glm_printing/glm_printing.hpp");
 
     output_collection.includes_required_for_declaration = {
-        create_local_include(meta_utils_rel_path),
+        create_local_include(meta_utils_rel_path.string()),
         "#include \"../" + std::filesystem::path(input_header_path).filename().string() + "\"",
         // "#include \"" + std::string(rel_glm_utils_path) + "\"",
         // "#include \"" + std::string(rel_glm_printing_path) + "\"",
@@ -2168,7 +2168,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     std::filesystem::path output_source = output_dir / (base_filename + ".cpp");
 
     output_collection.classes.push_back(meta_class);
-    output_collection.write_to_header_and_source(output_header, output_source);
+    output_collection.write_to_header_and_source(output_header.string(), output_source.string());
 
     return output_collection;
 }
