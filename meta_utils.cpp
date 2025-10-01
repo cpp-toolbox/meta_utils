@@ -1864,18 +1864,6 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     std::string output_source_path = "src/meta_program/meta_program.cpp";
     std::vector<std::string> paths = {output_header_path, output_source_path};
 
-    // NOTE: this logic is bad on the first run when the meta program doesn't yet exist.
-    // TODO: need logic to determine if we're running this from the project directory vs running the program as the
-    // compiled tool. after that we can integrate the serliazation/deserialization and then do printing and then
-    // visualizations.
-
-    // bool there_is_a_bad_path = not collection_utils::all_of(
-    //     collection_utils::map_vector(paths, [](std::string s) { return fs_utils::path_exists(s); }));
-    //
-    // if (there_is_a_bad_path) {
-    //     return;
-    // }
-
     std::filesystem::path output_header_dir = std::filesystem::path(output_header_path).parent_path();
 
     // TODO: replace this with an attribute
