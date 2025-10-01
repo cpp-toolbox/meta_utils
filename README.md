@@ -3,11 +3,11 @@
 This is a system which creates a "meta program", a meta program is a reflection system, it allows you to ask questions and do stuff with your existing code. Here are some things it currently does:
 - Allows you to take in a string invocation, and actually run the correct function (direct call)
 - Allows you to take in a string invocation, and return a function that will do that invocation later on (deferred call)
+- Automatically generates `to_string`, `from_string`, `serialize`, `deserialize` for custom types that you register
 
 ## TODO
-- Autogenerate to_string for all types
-- Be able to serialize/deserialize all types
-
+- Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
+- Add support for recursive custom types, eg a class that contains a vector of itself.
 
 ## Gotchas
 - This system looks at the source code, and creates code based on it, therefore if you make changes to your code the meta program will not update until you re-run the program, that will generate new meta program code, which needs to be compiled to be used.
