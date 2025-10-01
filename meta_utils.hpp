@@ -1561,6 +1561,9 @@ struct StringInvokerGenerationSettingsForHeaderSource {
     meta_utils::FilterMode mode;
 };
 
+/**
+ * @brief generates the meta program
+ */
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
                                            const std::vector<MetaType> &all_types);
 
