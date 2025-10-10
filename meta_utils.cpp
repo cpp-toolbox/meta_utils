@@ -811,22 +811,28 @@ meta_utils::MetaEnum create_meta_enum_from_source(const std::string &source) {
 }
 
 std::unordered_map<char, char> replacement_map = {{':', '_'}, {' ', '_'}};
+
 std::string to_string_function_name(const std::string &type) {
-    return text_utils::replace_chars(type, replacement_map) + "_to_string";
+    return text_utils::remove_consecutive_duplicates(text_utils::replace_chars(type, replacement_map) + "_to_string",
+                                                     "_");
 }
 std::string from_string_function_name(const std::string &type) {
-    return "string_to_" + text_utils::replace_chars(type, replacement_map);
+    return text_utils::remove_consecutive_duplicates("string_to_" + text_utils::replace_chars(type, replacement_map),
+                                                     "_");
 }
 std::string serialize_function_name(const std::string &type) {
-    return "serialize_" + text_utils::replace_chars(type, replacement_map);
+    return text_utils::remove_consecutive_duplicates("serialize_" + text_utils::replace_chars(type, replacement_map),
+                                                     "_");
 }
 
 std::string size_when_serialized_function_name(const std::string &type) {
-    return "size_when_serialized_" + text_utils::replace_chars(type, replacement_map);
+    return text_utils::remove_consecutive_duplicates(
+        "size_when_serialized_" + text_utils::replace_chars(type, replacement_map), "_");
 }
 
 std::string deserialize_function_name(const std::string &type) {
-    return "deserialize_" + text_utils::replace_chars(type, replacement_map);
+    return text_utils::remove_consecutive_duplicates("deserialize_" + text_utils::replace_chars(type, replacement_map),
+                                                     "_");
 }
 
 MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) {
@@ -845,6 +851,10 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
             variably_sized = true;
         }
     }
+
+    // NOTE: I've already tried to update this to re-use previously defined (to/from)_string/(de)serialize functions but
+    // the problem is that for types like vector<T> those conversions function don't already exist for it because it's a
+    // templated type and not a custom type...
 
     // ---------- To String ----------
     to_string_func.add("[=](const ", cls.name, "& obj) -> std::string {");
@@ -1832,6 +1842,8 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
 
         meta_utils::MetaType custom_mt;
 
+        std::cout << "before ifs" << std::endl;
+
         if (parser_name == cpp_parsing::enum_class_def_parser->name) {
             auto me = meta_utils::create_meta_enum_from_source(source);
             custom_mt = construct_enum_metatype(me, meta_utils::meta_types);
@@ -1927,6 +1939,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     meta_program_mcc.name = "meta_program";
     meta_program_mcc.name_space = "meta_program";
 
+    // NOTE: Here's the logic that generates all the functions for every type
     struct Helper {
         std::string lambda_source;
         std::string func_name;
@@ -1959,11 +1972,11 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     meta_program_mcc.includes_required_for_declaration = collection_utils::join_vectors(
         meta_program_mcc.includes_required_for_declaration, header_paths_of_other_string_invokers);
     meta_program_mcc.includes_required_for_declaration.push_back(optional_include);
-    meta_program_mcc.includes_required_for_declaration.push_back(
-        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp").string()));
+    meta_program_mcc.includes_required_for_declaration.push_back(create_local_include(
+        fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp").string()));
     meta_program_mcc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
-    meta_program_mcc.includes_required_for_declaration.push_back(
-        create_local_include(fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp").string()));
+    meta_program_mcc.includes_required_for_declaration.push_back(create_local_include(
+        fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp").string()));
 
     auto create_func_that_sequentially_tries_funcs_that_return_opt =
         [&](std::unordered_map<std::string, std::vector<ObjectFunction>> &return_type_to_invokers_that_return_it) {

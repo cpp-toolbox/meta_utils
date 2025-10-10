@@ -19,14 +19,60 @@
 
 namespace meta_utils {
 
+/**
+ * @class MetaInclude
+ * @brief Represents an include directive for C++ source code,
+ *        providing control over whether it is a system or local include.
+ *
+ * The MetaInclude class is used to generate standardized C++ include statements.
+ * It supports both system includes (`#include <...>`) and local includes
+ * (`#include "..."`) depending on the specified type.
+ */
 class MetaInclude {
   public:
-    enum class Type { Local, System };
+    /**
+     * @enum Type
+     * @brief Distinguishes between local and system include types.
+     */
+    enum class Type {
+        Local, ///< Include file from the project directory (uses quotes: `"..."`)
+        System ///< Include file from system paths (uses angle brackets: `<...>`)
+    };
 
+    /**
+     * @brief Constructs a MetaInclude with the given path and type.
+     *
+     * @param project_relative_path The path to the header file, relative to the project root.
+     * @param type The type of include (Local or System). Defaults to Local.
+     *
+     * Example usage:
+     * @code
+     * // Local include example (uses quotes)
+     * MetaInclude local_inc("src/utility/glm_meta_types/glm_meta_types.hpp");
+     * std::cout << local_inc.str() << std::endl;
+     * // Output: #include "src/utility/glm_meta_types/glm_meta_types.hpp"
+     *
+     * // System include example (uses angle brackets)
+     * MetaInclude system_inc("vector", MetaInclude::Type::System);
+     * std::cout << system_inc.str() << std::endl;
+     * // Output: #include <vector>
+     *
+     * // Relative include example (base path stripping)
+     * MetaInclude relative_inc("project/src/utility/math.hpp");
+     * std::cout << relative_inc.str("project") << std::endl;
+     * // Output: #include "src/utility/math.hpp"
+     * @endcode
+     */
     MetaInclude(std::string project_relative_path, Type type = Type::Local)
         : path(std::move(project_relative_path)), type(type) {}
 
-    // Default: stringify relative to project root
+    /**
+     * @brief Converts the MetaInclude into a valid C++ `#include` directive string.
+     *
+     * @param base The base directory to which the path should be made relative.
+     *             Defaults to the current directory (`"."`).
+     * @return A formatted include directive as a string.
+     */
     std::string str(const std::filesystem::path &base = ".") const {
         if (type == Type::System) {
             return "#include <" + path + ">";
@@ -37,8 +83,8 @@ class MetaInclude {
     }
 
   private:
-    std::string path;
-    Type type;
+    std::string path; ///< The path to the include file (relative to project root).
+    Type type;        ///< Whether the include is Local or System.
 };
 
 class MetaType;
