@@ -1286,8 +1286,8 @@ class MetaCodeCollection {
         std::string header_str = generate_header_file_string();
         std::string cpp_str = generate_cpp_file_string();
 
-        fs_utils::create_file_with_content(header_file_path, header_str);
-        fs_utils::create_file_with_content(cpp_file_path, cpp_str);
+        fs_utils::create_file_with_content_if_different(header_file_path, header_str);
+        fs_utils::create_file_with_content_if_different(cpp_file_path, cpp_str);
     }
 
     std::string generate_header_file_string() {
