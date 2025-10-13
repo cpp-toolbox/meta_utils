@@ -586,6 +586,9 @@ std::optional<MetaType> parse_meta_type_from_string(const std::string &type_str)
 
 std::string clean_type_string(const std::string &raw_type);
 
+/**
+ * @todo I think internally this should just use a meta variable.
+ */
 class MetaParameter {
   public:
     std::string name;
