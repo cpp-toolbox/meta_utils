@@ -17,6 +17,10 @@
 
 #include "sbpt_generated_includes.hpp"
 
+/**
+ * @todo I want logic that can automatically extract a function from source code that would be really handy, because
+ * that's the glue of programming half the time.
+ */
 namespace meta_utils {
 
 /**
@@ -534,6 +538,13 @@ inline std::vector<MetaType> concrete_types = {CHAR,  INT,           UNSIGNED_IN
 
 using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
+/**
+ * @brief an unordered map that takes in a templated type, such as "std::vector" along with a vector of a
+ * MetaTemplateParameters and attempts to construct the meta type representing the templated type
+ *
+ * @todo I really want support for optional, the value of that is storing data which might not be there, instead of
+ * always storing just an empty struct.
+ */
 inline std::unordered_map<std::string, std::function<MetaType(std::vector<MetaTemplateParameter>)>>
     generic_type_to_metatype_constructor = {
         // std::vector<T>
@@ -1609,6 +1620,111 @@ struct StringInvokerGenerationSettingsForHeaderSource {
 
 /**
  * @brief generates the meta program
+ *
+ * @todo this system is in the very early stages, there are alot of things that are bad about this system, but we can't
+ * ignore the fact that it works. Nevertheless I'm going to list the major issues and things we need to do looking ahead
+ * here
+ *
+ * @note one thing that I actively don't like about this is that the meta program that gets generated cannot have a
+ * default constructor, this is because the metaclass holds metafunctions of things which are generated upon
+ * construction and if not all the meta types are registered then you get an issue during initialization, so we have to
+ * find a way to fix this in the future so that the meta program can become a global variable.
+ *
+ * A flaw currently here is that meta types need to be registered to be used, the reason they need to be registered is
+ * so that in this function somewhere internally it will use meta_types to resolve a meta_type from a string (so the
+ * system needs to know about the active types currently defined), but at the same time we only generate from_string,
+ * ... etc for things that are registered, and so for type sthat are just like std::vector<int> which isn't registered
+ * we won't have a to_string for that...
+ *
+ * another major flaw is that we can't concretely define our to_string functions for non-concrete types before hand,
+ * this is true because if you consider something like unordered map, it would be num_types ^ 2 many different functions
+ * which is pretty horrible, instead that needs to be a function or something where it takes in two meta types and is
+ * albe to use the recursive to_string functions during that function, for every templated type it has to be like this.
+ *
+ * one option is to do something like this:
+ *
+ * @startcode
+ * #include <string>
+ * #include <unordered_map>
+ * #include <functional>
+ * #include <stdexcept>
+ * #include <sstream>
+ * #include <vector>
+ *
+ * // --- Base from_string specializations ---
+ * template <typename T>
+ * T from_string(const std::string& s);
+ *
+ * template <>
+ * int from_string<int>(const std::string& s) {
+ *     return std::stoi(s);
+ * }
+ *
+ * template <>
+ * float from_string<float>(const std::string& s) {
+ *     return std::stof(s);
+ * }
+ *
+ * template <>
+ * bool from_string<bool>(const std::string& s) {
+ *     return s == "true" || s == "1";
+ * }
+ *
+ * template <>
+ * std::string from_string<std::string>(const std::string& s) {
+ *     return s;
+ * }
+ *
+ * // --- Helper: split string by delimiter ---
+ * inline std::vector<std::string> split(const std::string& str, char delim) {
+ *     std::vector<std::string> tokens;
+ *     std::stringstream ss(str);
+ *     std::string token;
+ *     while (std::getline(ss, token, delim)) {
+ *         if (!token.empty())
+ *             tokens.push_back(token);
+ *     }
+ *     return tokens;
+ * }
+ *
+ * // --- The unordered_map specialization ---
+ * template <typename K, typename V>
+ * std::unordered_map<K, V> from_string(const std::string& s) {
+ *     std::unordered_map<K, V> result;
+ *
+ *     auto pairs = split(s, ',');
+ *     for (const auto& pair_str : pairs) {
+ *         auto kv = split(pair_str, ':');
+ *         if (kv.size() != 2) {
+ *             throw std::invalid_argument("Invalid map entry: " + pair_str);
+ *         }
+ *
+ *         K key = from_string<K>(kv[0]);
+ *         V value = from_string<V>(kv[1]);
+ *         result.emplace(std::move(key), std::move(value));
+ *     }
+ *
+ *     return result;
+ * }
+ * @endcode
+ *
+ * Then that allow us to create a generic from_string function for every type by using templates, this is what I like to
+ * call a "Baked" solution because you're using the built-in template system to make the logic happen, a different
+ * solution might be like this:
+ *
+ * Instead of using MetaTypes that internally hold the string representation of what they need to do instead, they hold
+ * the actual function that does it, then when a MetaType is Templated (ie has at least one Template Parameter), then
+ * instead there is a function to create that meta type that takes in those metatypes required and uses that to build
+ * the real meta type. In this system you can create custom MetaTypes during runtime and immediately get the
+ * from_string, etc... functions, but that requires constructing the type, so we need to decided whether this or the
+ * baked version is better.
+ *
+ * What about "CompiledMetaType"s, like why should we hold the string inside when we could possibly just have the real
+ * function, this could be a replacement to MetaType and allow us to dynamically create new MetaTypes that have their
+ * own functions defined actively by combining functions of the concrete types etc...
+ *
+ * still generating metatypes based on source code would still have to be done, but we could use this system to do it as
+ * well. It's like we're shoving some of the state only held in non-complied form into the compiled form
  */
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
                                            const std::vector<MetaType> &all_types);
