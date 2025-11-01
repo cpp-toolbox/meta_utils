@@ -1596,6 +1596,20 @@ struct CustomTypeExtractionSettings {
     meta_utils::FilterMode mode;
 };
 
+/**
+ * @todo we still can't support types of this form:
+ *
+ * @startcode
+ * class X {
+ *  std::unique_ptr<X> child;
+ * };
+ * @endcode
+ *
+ * this is because we don't have support for unique ptrs yet and the way we construct classes needs to be updated to
+ * allow for recursion by putting in a recursive placeholder or something and then updating its implementation after the
+ * fact
+ *
+ */
 void register_custom_types_into_meta_types(const std::vector<CustomTypeExtractionSettings> &settings_list);
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings);
 

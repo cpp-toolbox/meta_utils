@@ -1,5 +1,6 @@
 #include "meta_utils.hpp"
 #include <filesystem>
+#include <fmt/base.h>
 #include <iostream>
 #include <optional>
 #include <tuple>
@@ -1831,6 +1832,8 @@ void register_custom_types_into_meta_types(const std::vector<CustomTypeExtractio
 }
 
 void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &custom_type_extraction_settings) {
+
+    std::cout << "about to parse: " << custom_type_extraction_settings.header_file_path << std::endl;
 
     auto root = cpp_parsing::parse_source_or_header_file(custom_type_extraction_settings.header_file_path);
 
