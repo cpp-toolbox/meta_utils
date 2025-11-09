@@ -522,14 +522,19 @@ std::string create_unordered_map_deserialize_func(MetaType key_type, MetaType va
 }
 
 MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types) {
-    // 1. Try concrete lookup first
+    LogSection _(global_logger, "resolve_meta_type");
+
+    global_logger.info("type_str{}", type_str);
+
+    global_logger.info("Trying concrete lookup first");
     const auto &concrete_map = types.get_concrete_type_name_to_meta_type();
     auto it = concrete_map.find(type_str);
     if (it != concrete_map.end()) {
+        global_logger.info("it was a concrete type");
         return it->second;
     }
 
-    // 2. Try generic lookup (e.g., std::vector<int>, std::array<int, 5>)
+    global_logger.info("Trying generic lookup (e.g., std::vector<int>, std::array<int, 5>)");
     auto lt_pos = type_str.find('<');
     auto gt_pos = type_str.rfind('>');
     if (lt_pos != std::string::npos && gt_pos != std::string::npos && gt_pos > lt_pos) {
@@ -537,16 +542,32 @@ MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types) 
         std::string params_str = type_str.substr(lt_pos + 1, gt_pos - lt_pos - 1);
 
         // split parameters by commas
-        // NOTE: assumes simple case: no nested templates yet
         std::vector<std::string> param_tokens;
         {
-            std::stringstream ss(params_str);
-            std::string token;
-            while (std::getline(ss, token, ',')) {
-                // trim
-                token.erase(0, token.find_first_not_of(" \t"));
-                token.erase(token.find_last_not_of(" \t") + 1);
-                param_tokens.push_back(token);
+            std::string current;
+            int depth = 0;
+            for (char c : params_str) {
+                if (c == '<') {
+                    depth++;
+                    current += c;
+                } else if (c == '>') {
+                    depth--;
+                    current += c;
+                } else if (c == ',' && depth == 0) {
+                    // split only at top level commas
+                    param_tokens.push_back(current);
+                    current.clear();
+                } else {
+                    current += c;
+                }
+            }
+            if (!current.empty())
+                param_tokens.push_back(current);
+
+            // trim whitespace
+            for (auto &tok : param_tokens) {
+                tok.erase(0, tok.find_first_not_of(" \t"));
+                tok.erase(tok.find_last_not_of(" \t") + 1);
             }
         }
 
