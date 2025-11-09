@@ -876,9 +876,10 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
 
     // NOTE: I've already tried to update this to re-use previously defined (to/from)_string/(de)serialize functions but
     // the problem is that for types like vector<T> those conversions function don't already exist for it because it's a
-    // templated type and not a custom type...
+    // templated type and not a custom type... we only generate for concrete types and not templated types and note that
+    // classes are concrete types. we can't generate for templated types because there can be "infinitely many" of them
 
-    // ---------- To String ----------
+    // startfold to string
     to_string_func.add("[=](const ", cls.name, "& obj) -> std::string {");
     to_string_func.add("    std::ostringstream oss;");
     to_string_func.add("    oss << \"{\";");
@@ -901,8 +902,9 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     to_string_func.add("    oss << \"}\";");
     to_string_func.add("    return oss.str();");
     to_string_func.add("}");
+    // endfold
 
-    // ---------- From String ----------
+    // startfold from string
     from_string_func.add("[=](const std::string &s) -> ", cls.name, " {");
     from_string_func.add("    ", cls.name, " obj;");
     from_string_func.add("    std::string trimmed = s.substr(1, s.size() - 2); // remove {}");
@@ -924,8 +926,9 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
 
     from_string_func.add("    return obj;");
     from_string_func.add("}");
+    // endfold
 
-    // ---------- Serialize ----------
+    // startfold serialize
     serialize_func.add("[=](const ", cls.name, "& obj) -> std::vector<uint8_t> {");
     serialize_func.add("    std::vector<uint8_t> buffer;");
 
@@ -947,8 +950,9 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
 
     serialize_func.add("    return buffer;");
     serialize_func.add("}");
+    // endfold
 
-    // ---------- Deserialize ----------
+    // startfold deserialize
     deserialize_func.add("[=](const std::vector<uint8_t> &buffer) -> ", cls.name, " {");
     deserialize_func.add("    ", cls.name, " obj;");
     deserialize_func.add("    size_t offset = 0;");
@@ -985,8 +989,9 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
 
     deserialize_func.add("    return obj;");
     deserialize_func.add("}");
+    // endfold
 
-    // ---------- Size When Serialized ----------
+    // startfold size when serialized
     size_func.add("[=](const ", cls.name, "& obj) -> size_t {");
     size_func.add("    size_t total = 0;");
     for (const auto &attr : cls.attributes) {
@@ -1001,6 +1006,8 @@ MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types) 
     }
     size_func.add("    return total;");
     size_func.add("}");
+
+    // endfold
 
     auto mt = MetaType(cls.name, from_string_func.str(), to_string_func.str(), serialize_func.str(), size_func.str(),
                        deserialize_func.str(), regex_utils::any_char_greedy, {});

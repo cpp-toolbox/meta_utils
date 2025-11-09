@@ -95,29 +95,80 @@ class MetaType;
 
 using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
 
-// NOTE: we can't use MetaFunctions in here because we get a cyclic dependency
+/**
+ * @class MetaType
+ * @brief Represents a type with metadata used for reflection, serialization, and code generation.
+ * @note this entire class is probably going to be replaced one day since this is my first attempt at this and I'm naive
+ *
+ * The `MetaType` class encapsulates information about a data type, including its conversion
+ * functions, serialization routines, template parameters, and other metadata. It is used to
+ * describe both concrete and generic types, allowing introspection and code generation for
+ * type-related operations.
+ *
+ * ## Example
+ * ```cpp
+ * MetaType int_type("int", "[](std::string s){ return std::stoi(s); }",
+ *                   "[](int v){ return std::to_string(v); }",
+ *                   "[](int v){ ...serialize... }",
+ *                   "[](int v){ return sizeof(int); }",
+ *                   "[](std::vector<uint8_t> data){ ...deserialize... }",
+ *                   R"(\d+)");
+ * ```
+ *
+ * ## Notes
+ * - For templated types (e.g., `std::vector<T>`), `template_parameters` contains metadata for each
+ *   parameter, which may itself be another `MetaType`.
+ * - The `variably_sized` flag indicates whether serialized size differs from `sizeof(T)` (e.g., strings or vectors).
+ * - The `size_when_serialized_bytes_func_lambda` field exists because serialized sizes can differ from
+ *   memory sizes due to padding removal.
+ *
+ *   @note we can't use MetaFunctions in here because we get a cyclic dependency. Can we though?
+ */
 class MetaType {
   public:
+    /// The base name of the type (e.g., `"int"`, `"std::vector"`).
     std::string base_type_name;
+
+    /// Lambda expression (as a string) converting from a string to this type.
     std::string string_to_type_func_lambda;
+
+    /// Lambda expression (as a string) converting from this type to a string.
     std::string type_to_string_func_lambda;
+
+    /// Lambda expression (as a string) for serializing this type to bytes.
     std::string serialize_type_func_lambda;
-    // NOTE: this has to exist, because sometimes you have a struct that when serialized only uses up 5 bytes, but if
-    // you use the sizeof operator on it it would return 8, this is due to padding, which is not present in the
-    // serialized state
+
+    /// Lambda expression (as a string) returning the number of bytes this type occupies when serialized.
+    /// Accounts for padding differences between memory layout and serialized representation.
     std::string size_when_serialized_bytes_func_lambda;
+
+    /// Lambda expression (as a string) for deserializing this type from bytes.
     std::string deserialize_type_func_lambda;
+
+    /// Regular expression string used to match literal representations of this type.
     std::string literal_regex;
 
+    /// List of header files required to use this type.
     std::vector<MetaInclude> includes_required;
 
+    /// Indicates whether the type is variably sized when serialized (e.g., `std::string`, `std::vector`).
     bool variably_sized = false;
 
-    // Optional pointer to underlying element type (e.g., for vector<T>)
-    // also note that when something is generic, we talk about the version with
-    // nullptr here, concrete types are when this is not a nullptr
+    /// Set of type names known to be variably sized. @warning you must add it in here for it to work properly
+    std::set<std::string> variably_sized_types = {"std::vector", "std::string", "std::unordered_map"};
+
+    /// Template parameters of the type (e.g., the `T` in `std::vector<T>`).
+    /// Each parameter can be either a `MetaType` (for type parameters) or an unsigned integer
+    /// (for non-type template parameters). Integer is coming from std::array and such
     std::vector<MetaTemplateParameter> template_parameters;
 
+    /**
+     * @brief Equality operator comparing all relevant metadata fields.
+     *
+     * @param other The `MetaType` to compare with.
+     * @return True if both types have the same base name, conversion functions, literal regex,
+     *         and template parameters.
+     */
     bool operator==(const MetaType &other) const {
         return base_type_name == other.base_type_name &&
                string_to_type_func_lambda == other.string_to_type_func_lambda &&
@@ -126,6 +177,18 @@ class MetaType {
     }
 
     MetaType() {}
+    /**
+     * @brief Constructs a `MetaType` with the given metadata and optional template parameters.
+     *
+     * @param name The base name of the type.
+     * @param string_to_type_func Lambda string converting from string to type.
+     * @param type_to_string_func Lambda string converting from type to string.
+     * @param serialize_type_func Lambda string for serializing the type.
+     * @param size_when_serialized_bytes_func Lambda string for computing serialized size.
+     * @param deserialize_type_func Lambda string for deserializing the type.
+     * @param literal_regex Regular expression matching type literals.
+     * @param element_types Optional list of template parameter types.
+     */
     MetaType(std::string name, std::string string_to_type_func, std::string type_to_string_func,
              std::string serialize_type_func, std::string size_when_serialized_bytes_func,
              std::string deserialize_type_func, std::string literal_regex,
@@ -136,15 +199,32 @@ class MetaType {
           deserialize_type_func_lambda(deserialize_type_func), literal_regex(std::move(literal_regex)),
           template_parameters(element_types) {
 
-        std::set<std::string> variably_sized_types = {"std::vector", "std::string"};
         variably_sized = variably_sized_types.find(base_type_name) != variably_sized_types.end();
     }
 
+    /**
+     * @brief Returns a detailed string representation of this `MetaType` for debugging.
+     *
+     * @return A formatted multiline string describing this `MetaType` and its template parameters.
+     */
     std::string to_string() const { return to_string_rec(*this); }
 
+    /**
+     * @brief Returns the fully qualified C++ type name represented by this `MetaType`.
+     *
+     * Includes nested template arguments, e.g., `"std::vector<std::string>"`.
+     *
+     * @return The type name as a string.
+     */
     std::string get_type_name() const { return get_type_name_rec(*this); }
 
   private:
+    /**
+     * @brief Recursively constructs the full C++ type name for a `MetaType`.
+     *
+     * @param meta_type The type to process.
+     * @return The fully qualified type name.
+     */
     std::string get_type_name_rec(const MetaType &meta_type) const {
         if (meta_type.template_parameters.empty()) {
             return meta_type.base_type_name;
@@ -174,6 +254,14 @@ class MetaType {
         return oss.str();
     }
 
+    /**
+     * @brief Recursively builds a formatted string representation of the `MetaType`.
+     *
+     * Used internally by `to_string()` to print nested template parameters.
+     *
+     * @param meta_type The `MetaType` to convert.
+     * @return A formatted string.
+     */
     std::string to_string_rec(const MetaType &meta_type) const {
         std::ostringstream oss;
         oss << "MetaType {\n";
@@ -1790,12 +1878,21 @@ inline MetaTypes meta_types;
 MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types = meta_utils::meta_types);
 
 meta_utils::MetaClass create_meta_class_from_source(const std::string &source);
+
 // NOTE: this creates a class because I didn't feel it was necessary to create a MetaStruct yet, because a struct is
 // really a specific type of class, so in the meta world I consider a struct a class, but then if I want to write to
 // file we would lose the fact that it's a struct... consider this later when that's an issue.
 meta_utils::MetaClass create_meta_struct_from_source(const std::string &source);
 meta_utils::MetaType create_meta_type_from_using(const std::string &source, const meta_utils::MetaTypes &types);
 
+/**
+ * @brief Constructs a MetaType representation for a concrete class type.
+ *
+ * This function generates all the serialization, deserialization, and
+ * string conversion lambda functions for a given `MetaClass` definition.
+ * It uses existing `MetaType` information from the provided `MetaTypes` registry
+ * to recursively build conversion logic for each attribute of the class.
+ */
 meta_utils::MetaType construct_class_metatype(const MetaClass &cls, const MetaTypes &types);
 
 }; // namespace meta_utils
