@@ -9,6 +9,7 @@ This is a system which creates a "meta program", a meta program is a reflection 
 - Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
 - Add support for recursive custom types, eg a class that contains a vector of itself.
 - Add ability to take the union or intersection of classes.
+- Add ability to autogenerate constructors.
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
 
 ## Gotchas
