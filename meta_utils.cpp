@@ -124,7 +124,8 @@ std::string create_vector_of_type_serialize_func(MetaType type_parameter) {
     msa.add("[=](const std::vector<", type_parameter.get_type_name(), ">& vec) -> std::vector<uint8_t> {");
     msa.add("    std::vector<uint8_t> buffer;");
 
-    // store vector size first
+    msa.add(
+        "    // store vector size first, which is necessary or else we won't know when to stop during deserialization");
     msa.add("    size_t count = vec.size();");
     msa.add("    buffer.resize(sizeof(size_t));");
     msa.add("    std::memcpy(buffer.data(), &count, sizeof(size_t));");
@@ -137,16 +138,19 @@ std::string create_vector_of_type_serialize_func(MetaType type_parameter) {
         msa.add("    for (const auto& elem : vec) {");
         msa.add("        auto elem_bytes = element_serializer(elem);");
         msa.add("        size_t elem_size = elem_bytes.size();");
+        msa.add("        // increase the active buffers size so we can fit the next object in");
         msa.add("        buffer.resize(buffer.size() + sizeof(size_t));");
+        msa.add("        // copy in the size of the object we're about to insert before that object");
         msa.add("        std::memcpy(buffer.data() + buffer.size() - sizeof(size_t), &elem_size, sizeof(size_t));");
+        msa.add("        // dump the object in");
         msa.add("        buffer.insert(buffer.end(), elem_bytes.begin(), elem_bytes.end());");
         msa.add("    }");
     } else {
-        // fixed-size inner type
-        msa.add("    if (!vec.empty()) {");
-        msa.add("        size_t elem_size = sizeof(", type_parameter.get_type_name(), ");");
-        msa.add("        buffer.resize(buffer.size() + vec.size() * elem_size);");
-        msa.add("        std::memcpy(buffer.data() + sizeof(size_t), vec.data(), vec.size() * elem_size);");
+        // TODO: can we pre allowcate the entire buffer size?
+        // fixed-size inner type, no need to prepend the size of each object.
+        msa.add("    for (const auto& elem : vec) {");
+        msa.add("        auto elem_bytes = element_serializer(elem);");
+        msa.add("        buffer.insert(buffer.end(), elem_bytes.begin(), elem_bytes.end());");
         msa.add("    }");
     }
 
@@ -199,6 +203,8 @@ std::string create_vector_of_type_deserialize_func(MetaType type_parameter) {
     msa.add("    size_t offset = sizeof(size_t);");
     msa.add("    auto element_deserializer = ", type_parameter.deserialize_type_func_lambda, ";");
 
+    // TODO: Think about if we've implicitly made this work for empty vectors or not.
+
     if (type_parameter.variably_sized) {
         // variable-size elements: each element prefixed with its size
         msa.add("    for (size_t i = 0; i < count; ++i) {");
@@ -214,8 +220,14 @@ std::string create_vector_of_type_deserialize_func(MetaType type_parameter) {
         msa.add("        offset += elem_size;");
         msa.add("    }");
     } else {
-        // fixed-size elements: read sizeof(inner) bytes per element
-        msa.add("    size_t elem_size = sizeof(", inner, ");");
+
+        msa.add("    // NOTE: big assumption, assumes the default constructor exists for this object. There's gotta be "
+                "a better way, what if we made size when serialized take in an optional value.");
+        msa.add("    ", inner, " dummy; ");
+        msa.add("    auto size_fn = ", type_parameter.size_when_serialized_bytes_func_lambda, ";");
+        msa.add("    size_t elem_size = size_fn(dummy);");
+
+        // fixed-size elements: read size_when_serialized(inner) bytes per element
         msa.add("    if (offset + count * elem_size > buffer.size()) return result; // safety check");
         msa.add("    for (size_t i = 0; i < count; ++i) {");
         msa.add("        std::vector<uint8_t> elem_buf(buffer.begin() + offset, buffer.begin() + offset + elem_size);");
