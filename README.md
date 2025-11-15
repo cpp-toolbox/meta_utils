@@ -7,6 +7,7 @@ This is a system which creates a "meta program", a meta program is a reflection 
 
 ## TODO
 - Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
+- To string functions should have a mode where it can format with newlines, from string will remove all whitespace before parsing back out.
 - Add support for recursive custom types, eg a class that contains a vector of itself.
 - Add ability to take the union or intersection of classes.
 - Add ability to autogenerate constructors.
