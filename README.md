@@ -14,6 +14,7 @@ This is a system which creates a "meta program", a meta program is a reflection 
 - Add ability to extract classes or structs into an external file
 - Add ability to extract code into a function
 - Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
+- Add ability to extract implementation out of header file into a source file
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
 
 ## Gotchas
