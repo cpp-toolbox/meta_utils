@@ -1215,6 +1215,14 @@ class MetaClass {
     MetaClass(std::string name, std::string name_space = "", bool is_final = false)
         : name(std::move(name)), name_space(std::move(name_space)), is_final(is_final) {}
 
+    bool has_any_private_attributes() const {
+        for (const auto &attr : attributes) {
+            if (attr.access == AccessSpecifier::Private)
+                return true;
+        }
+        return false;
+    }
+
     void add_attribute(const MetaAttribute &attr) { attributes.push_back(attr); }
     void add_method(const MetaMethod &method) {
         auto sig_str = method.function.signature.to_string();
