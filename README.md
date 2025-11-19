@@ -7,12 +7,15 @@ This is a system which creates a "meta program", a meta program is a reflection 
 
 ## TODO
 - Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
+- To string functions should have a mode where it can format with newlines, from string will remove all whitespace before parsing back out.
 - Add support for recursive custom types, eg a class that contains a vector of itself.
 - Add ability to take the union or intersection of classes.
 - Add ability to autogenerate constructors.
 - Add ability to extract classes or structs into an external file
 - Add ability to extract code into a function
 - Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
+- Add ability to extract implementation out of header file into a source file
+- Add ability to convert between equivalent types, if two types are equivalent, then you can show how to map between the two, the reason for automation is that if you enter a new code base you don't have to create conversion between different equivalent types, that glue would already be built, not exactly sure about the specifics of this yet.
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
 
 ## Gotchas

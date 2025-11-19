@@ -848,8 +848,16 @@ MetaClass create_meta_class_or_struct_from_source(
             init_style = maybe_init->second;
         }
 
+        // NOTE: this is wrong, but I'm doing this because I I'm not figuring out dynamically whehter or not we are in a
+        // public/private section for now Im doing it this way which is wrong and will not allow any class to be
+        // serialized only structs.
+        AccessSpecifier as = AccessSpecifier::Private;
+        if (kind == "struct") {
+            as = AccessSpecifier::Public;
+        }
+
         MetaVariable mv(type_text, var_name, value_text, init_style);
-        MetaAttribute ma(std::move(mv));
+        MetaAttribute ma(std::move(mv), as);
         mc.add_attribute(ma);
     }
 
@@ -2003,9 +2011,21 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
             custom_mt = construct_enum_metatype(me, meta_utils::meta_types);
         } else if (parser_name == cpp_parsing::class_def_parser->name) {
             auto mc = meta_utils::create_meta_class_from_source(source);
+            if (mc.has_any_private_attributes()) {
+                global_logger.warn("we were going to construct a meta type for {}, but it had private attributes and "
+                                   "thus we don't know how to serialize it",
+                                   mc.name);
+                continue;
+            }
             custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
         } else if (parser_name == cpp_parsing::struct_def_parser->name) {
             auto mc = meta_utils::create_meta_struct_from_source(source);
+            if (mc.has_any_private_attributes()) {
+                global_logger.warn("we were going to construct a meta type for {}, but it had private attributes and "
+                                   "thus we don't know how to serialize it",
+                                   mc.name);
+                continue;
+            }
             custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
         } else if (parser_name == cpp_parsing::using_statement_parser->name) {
             custom_mt = meta_utils::create_meta_type_from_using(source, meta_utils::meta_types);
