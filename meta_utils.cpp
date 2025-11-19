@@ -69,6 +69,117 @@ std::vector<float> parse_vector_of_type(const std::string &input) {
     return result;
 }
 
+std::string create_string_to_optional_of_type_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+    msa.add("[=](const std::string &input) -> std::optional<", type_parameter.get_type_name(), "> {");
+    msa.add("    std::string trimmed = input;");
+    msa.add("    // Trim whitespace");
+    msa.add("    trimmed.erase(0, trimmed.find_first_not_of(\" \\t\\n\\r\"));");
+    msa.add("    trimmed.erase(trimmed.find_last_not_of(\" \\t\\n\\r\") + 1);");
+    msa.add("");
+    msa.add("    // Explicit representation of null:");
+    msa.add("    if (trimmed == \"std::nullopt\") {");
+    msa.add("        return std::nullopt;");
+    msa.add("    }");
+    msa.add("");
+    msa.add("    // Try matching actual value");
+    msa.add("    std::regex element_re(R\"(", type_parameter.literal_regex, ")\");");
+    msa.add("    std::smatch match;");
+    msa.add("");
+    msa.add("    if (std::regex_match(trimmed, match, element_re)) {");
+    msa.add("        try {");
+    msa.add("            auto conversion = ", type_parameter.string_to_type_func_lambda, ";");
+    msa.add("            return conversion(trimmed);");
+    msa.add("        } catch (...) {");
+    msa.add("            return std::nullopt;");
+    msa.add("        }");
+    msa.add("    }");
+    msa.add("");
+    msa.add("    // Anything else is treated as nullopt");
+    msa.add("    return std::nullopt;");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_optional_of_type_to_string_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::optional<", type_parameter.get_type_name(), ">& opt) -> std::string {");
+    msa.add("    if (!opt.has_value()) {");
+    msa.add("        return \"std::nullopt\";");
+    msa.add("    }");
+    msa.add("");
+    msa.add("    auto conversion = ", type_parameter.type_to_string_func_lambda, ";");
+    msa.add("    return conversion(*opt);");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_optional_of_type_serialize_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::optional<", type_parameter.get_type_name(), ">& opt) -> std::vector<uint8_t> {");
+    msa.add("    std::vector<uint8_t> buffer;");
+    msa.add("");
+    msa.add("    // First byte: 0 = nullopt, 1 = value present");
+    msa.add("    if (!opt.has_value()) {");
+    msa.add("        buffer.push_back(0);");
+    msa.add("        return buffer;");
+    msa.add("    }");
+    msa.add("");
+    msa.add("    buffer.push_back(1); // value present");
+    msa.add("    auto element_serializer = ", type_parameter.serialize_type_func_lambda, ";");
+    msa.add("    auto elem_bytes = element_serializer(*opt);");
+    msa.add("    buffer.insert(buffer.end(), elem_bytes.begin(), elem_bytes.end());");
+
+    msa.add("");
+    msa.add("    return buffer;");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_optional_of_type_deserialize_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::vector<uint8_t>& buffer) -> std::optional<", type_parameter.get_type_name(), "> {");
+    msa.add("    if (buffer.empty()) return std::nullopt;  // empty buffer");
+    msa.add("");
+    msa.add("    // First byte indicates presence of value");
+    msa.add("    uint8_t has_value = buffer[0];");
+    msa.add("    if (has_value == 0) return std::nullopt;"); // no value present
+    msa.add("");
+    msa.add("    // Value is present, delegate deserialization to inner type");
+    msa.add("    auto element_deserializer = ", type_parameter.deserialize_type_func_lambda, ";");
+    msa.add("    std::vector<uint8_t> elem_bytes(buffer.begin() + 1, buffer.end());");
+    msa.add("    return element_deserializer(elem_bytes);");
+    msa.add("}");
+
+    return msa.str();
+}
+
+std::string create_optional_of_type_serialized_size_func(MetaType type_parameter) {
+    text_utils::MultilineStringAccumulator msa;
+
+    msa.add("[=](const std::optional<", type_parameter.get_type_name(), ">& opt) -> size_t {");
+    msa.add("    size_t total_size = 1; // presence flag (1 byte)");
+    msa.add("");
+    msa.add("    if (!opt.has_value()) {");
+    msa.add("        return total_size; // only the presence flag");
+    msa.add("    }");
+    msa.add("");
+    msa.add("    // Value is present, delegate to inner type's size function");
+    msa.add("    auto element_size_func = ", type_parameter.size_when_serialized_bytes_func_lambda, ";");
+    msa.add("    total_size += element_size_func(*opt);");
+    msa.add("");
+    msa.add("    return total_size;");
+    msa.add("}");
+
+    return msa.str();
+}
+
 std::string create_string_to_vector_of_type_func(MetaType type_parameter) {
     text_utils::MultilineStringAccumulator msa;
 

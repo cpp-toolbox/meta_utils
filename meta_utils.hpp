@@ -154,8 +154,10 @@ class MetaType {
     /// Indicates whether the type is variably sized when serialized (e.g., `std::string`, `std::vector`).
     bool variably_sized = false;
 
-    /// Set of type names known to be variably sized. @warning you must add it in here for it to work properly
-    std::set<std::string> variably_sized_types = {"std::vector", "std::string", "std::unordered_map"};
+    /// Set of type names known to be variably sized. @warning you must add it in here for it to work properly because
+    /// when you construct a meta type via a string for some reason the only way we can know its variably sized is if
+    /// its in this map, HORRIBLE FIX
+    std::set<std::string> variably_sized_types = {"std::vector", "std::string", "std::unordered_map", "std::optional"};
 
     /// Template parameters of the type (e.g., the `T` in `std::vector<T>`).
     /// Each parameter can be either a `MetaType` (for type parameters) or an unsigned integer
@@ -550,6 +552,12 @@ inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[]
 // them, instead we define a function that generates a concrete genric type for
 // a given generic type
 
+std::string create_string_to_optional_of_type_func(MetaType type_parameter);
+std::string create_optional_of_type_to_string_func(MetaType type_parameter);
+std::string create_optional_of_type_serialize_func(MetaType type_parameter);
+std::string create_optional_of_type_serialized_size_func(MetaType type_parameter);
+std::string create_optional_of_type_deserialize_func(MetaType type_parameter);
+
 // NOTE: this function does not yet support recursive vector types (only one
 // layer deep support)
 std::string create_string_to_vector_of_type_func(MetaType type_parameter);
@@ -563,6 +571,24 @@ std::string create_array_of_type_to_string_func(MetaType type_parameter, unsigne
 std::string create_array_of_type_serialize_func(MetaType type_parameter, unsigned int size);
 std::string create_array_of_type_serialized_size_func(MetaType type_parameter, unsigned int size);
 std::string create_array_of_type_deserialize_func(MetaType type_parameter, unsigned int size);
+
+inline MetaType construct_optional_metatype(MetaType generic_type) {
+    auto string_to_optional_of_generic_type_func = create_string_to_optional_of_type_func(generic_type);
+    auto optional_of_type_to_string_func = create_optional_of_type_to_string_func(generic_type);
+    auto optional_of_type_serialize_func = create_optional_of_type_serialize_func(generic_type);
+    auto optional_of_type_serialized_size_func = create_optional_of_type_serialized_size_func(generic_type);
+    auto optional_of_type_deserialize_func = create_optional_of_type_deserialize_func(generic_type);
+
+    return MetaType("std::optional",
+                    string_to_optional_of_generic_type_func, // string → optional<T>
+                    optional_of_type_to_string_func,         // optional<T> → string
+                    optional_of_type_serialize_func,         // optional<T> → bytes
+                    optional_of_type_serialized_size_func,   // optional<T> → size in bytes
+                    optional_of_type_deserialize_func,       // bytes → optional<T>
+                    regex_utils::any_char_greedy,            // literal regex (matches only nullopt string)
+                    {generic_type}                           // contained type(s)
+    );
+}
 
 inline MetaType construct_vector_metatype(MetaType generic_type) {
     auto string_to_vector_of_generic_type_func = create_string_to_vector_of_type_func(generic_type);
@@ -630,8 +656,8 @@ using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
  * @brief an unordered map that takes in a templated type, such as "std::vector" along with a vector of a
  * MetaTemplateParameters and attempts to construct the meta type representing the templated type
  *
- * @todo I really want support for optional, the value of that is storing data which might not be there, instead of
- * always storing just an empty struct.
+ * @note whenever you create a new type that is variably sized you have to add it to some random vector elsewhere which
+ * is just insanity
  */
 inline std::unordered_map<std::string, std::function<MetaType(std::vector<MetaTemplateParameter>)>>
     generic_type_to_metatype_constructor = {
@@ -644,6 +670,17 @@ inline std::unordered_map<std::string, std::function<MetaType(std::vector<MetaTe
 
              const MetaType &element_type = std::get<MetaType>(template_parameters[0]);
              return construct_vector_metatype(element_type);
+         }},
+
+        // std::optional<T>
+        {"std::optional",
+         [](std::vector<MetaTemplateParameter> template_parameters) -> MetaType {
+             if (template_parameters.size() != 1) {
+                 throw std::invalid_argument("std::optional requires exactly 1 template parameter");
+             }
+
+             const MetaType &element_type = std::get<MetaType>(template_parameters[0]);
+             return construct_optional_metatype(element_type);
          }},
 
         // std::array<T, N>
