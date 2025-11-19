@@ -417,31 +417,39 @@ inline MetaType LONG =
              "  return v; }",
              regex_utils::int_regex);
 
-inline MetaType FLOAT =
-    MetaType("float", "[](const std::string &s) { return std::stof(s); }", create_to_string_lambda("float"),
-             "[](const float &v) { "
-             "  std::vector<uint8_t> buf(sizeof(float)); "
-             "  std::memcpy(buf.data(), &v, sizeof(float)); "
-             "  return buf; }",
-             "[](const float &v) { return sizeof(float); }",
-             "[](const std::vector<uint8_t> &buf) { "
-             "  float v; "
-             "  std::memcpy(&v, buf.data(), sizeof(float)); "
-             "  return v; }",
-             regex_utils::float_regex);
+inline MetaType FLOAT = MetaType("float", "[](const std::string &s) { return std::stof(s); }",
+                                 "[](const float &v) {"
+                                 "  std::ostringstream oss;"
+                                 "  oss << std::setprecision(std::numeric_limits<float>::max_digits10) << v;"
+                                 "  return oss.str();"
+                                 "}",
+                                 "[](const float &v) { "
+                                 "  std::vector<uint8_t> buf(sizeof(float)); "
+                                 "  std::memcpy(buf.data(), &v, sizeof(float)); "
+                                 "  return buf; }",
+                                 "[](const float &v) { return sizeof(float); }",
+                                 "[](const std::vector<uint8_t> &buf) { "
+                                 "  float v; "
+                                 "  std::memcpy(&v, buf.data(), sizeof(float)); "
+                                 "  return v; }",
+                                 regex_utils::float_regex);
 
-inline MetaType DOUBLE =
-    MetaType("double", "[](const std::string &s) { return std::stod(s); }", create_to_string_lambda("double"),
-             "[](const double &v) { "
-             "  std::vector<uint8_t> buf(sizeof(double)); "
-             "  std::memcpy(buf.data(), &v, sizeof(double)); "
-             "  return buf; }",
-             "[](const double &v) { return sizeof(double); }",
-             "[](const std::vector<uint8_t> &buf) { "
-             "  double v; "
-             "  std::memcpy(&v, buf.data(), sizeof(double)); "
-             "  return v; }",
-             regex_utils::float_regex);
+inline MetaType DOUBLE = MetaType("double", "[](const std::string &s) { return std::stod(s); }",
+                                  "[](const double &v) {"
+                                  "  std::ostringstream oss;"
+                                  "  oss << std::setprecision(std::numeric_limits<double>::max_digits10) << v;"
+                                  "  return oss.str();"
+                                  "}",
+                                  "[](const double &v) { "
+                                  "  std::vector<uint8_t> buf(sizeof(double)); "
+                                  "  std::memcpy(buf.data(), &v, sizeof(double)); "
+                                  "  return buf; }",
+                                  "[](const double &v) { return sizeof(double); }",
+                                  "[](const std::vector<uint8_t> &buf) { "
+                                  "  double v; "
+                                  "  std::memcpy(&v, buf.data(), sizeof(double)); "
+                                  "  return v; }",
+                                  regex_utils::float_regex);
 
 inline MetaType STRING =
     MetaType("std::string",
