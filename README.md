@@ -11,6 +11,7 @@ This is a system which creates a "meta program", a meta program is a reflection 
 - Add support for recursive custom types, eg a class that contains a vector of itself.
 - Add ability to take the union or intersection of classes.
 - Add ability to autogenerate constructors.
+- Automatically build constructors and getters.
 - Add ability to extract classes or structs into an external file
 - Add ability to extract code into a function
 - Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
