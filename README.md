@@ -5,18 +5,21 @@ This is a system which creates a "meta program", a meta program is a reflection 
 - Allows you to take in a string invocation, and return a function that will do that invocation later on (deferred call)
 - Automatically generates `to_string`, `from_string`, `serialize`, `deserialize` for custom types that you register
 
+There should be some deliniation between the logic for the meta program, and this, and this is just tools to operate on source code providing you to parse it into a meta format? idk yet this needs more time in the oven before I truly know what it is
+
 ## TODO
 - Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
 - To string functions should have a mode where it can format with newlines, from string will remove all whitespace before parsing back out.
+- Add support for templated types function generation, on way to do it is to maintain the current logic, and then improve it by adding "Converters" on top of it. Ie right now there there is no function exsting for std::vector<int> because we'd have to do it for every type subitition which is really stupid, this allows us to hook into the c++ template system. Also this is blocking me from being able to reduce all the copy pasted code in the conversions, once this is figured out then I can do that properly. See: https://chatgpt.com/share/69277554-cc24-8007-ac9f-929b801f8132
 - Add support for recursive custom types, eg a class that contains a vector of itself.
-- Add ability to take the union or intersection of classes.
-- Add ability to autogenerate constructors.
-- Add ability to extract classes or structs into an external file
+- Add ability to extract classes or structs into an external file (eg get this struct and give it its own file)
 - Add ability to extract code into a function
-- Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
 - Add ability to extract implementation out of header file into a source file
 - Add ability to convert between equivalent types, if two types are equivalent, then you can show how to map between the two, the reason for automation is that if you enter a new code base you don't have to create conversion between different equivalent types, that glue would already be built, not exactly sure about the specifics of this yet.
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
+- Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
+- Add ability to autogenerate constructors.
+- Add ability to take the union or intersection of classes.
 
 ## Gotchas
 - Some types are not able to be reconstructed, one example of this the `std::regex` object, the problem with it is that you construct it by passing a pattern, and so you would expect `from_string` to take in the pattern and construct the regex, which makes sense and is possible, but the `to_string` can't be defined in a way that allows to say that `r = from_string(to_string(r))` as we don't have access to the pattern, thus we cannot define these functions for this type, keep this in mind.

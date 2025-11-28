@@ -645,19 +645,19 @@ std::string create_unordered_map_deserialize_func(MetaType key_type, MetaType va
 }
 
 MetaType resolve_meta_type(const std::string &type_str, const MetaTypes &types) {
-    LogSection _(global_logger, "resolve_meta_type");
+    GlobalLogSection _("resolve_meta_type");
 
-    global_logger.info("type_str{}", type_str);
+    global_logger->info("type_str{}", type_str);
 
-    global_logger.info("Trying concrete lookup first");
+    global_logger->info("Trying concrete lookup first");
     const auto &concrete_map = types.get_concrete_type_name_to_meta_type();
     auto it = concrete_map.find(type_str);
     if (it != concrete_map.end()) {
-        global_logger.info("it was a concrete type");
+        global_logger->info("it was a concrete type");
         return it->second;
     }
 
-    global_logger.info("Trying generic lookup (e.g., std::vector<int>, std::array<int, 5>)");
+    global_logger->info("Trying generic lookup (e.g., std::vector<int>, std::array<int, 5>)");
     auto lt_pos = type_str.find('<');
     auto gt_pos = type_str.rfind('>');
     if (lt_pos != std::string::npos && gt_pos != std::string::npos && gt_pos > lt_pos) {
@@ -1671,11 +1671,11 @@ std::vector<MetaVariable> generate_meta_function_signature_variables(std::vector
         auto var_name = "mfs_" + mfs.name;
         // NOTE: we're using value as the parameters which is weird but it works.
         auto value = text_utils::join({text_utils::surround(mfs.to_string(), text_utils::double_quote),
-                                       text_utils::surround(mfs.name_space, text_utils::double_quote)},
+                                       text_utils::surround(mfs.name_space_this_is_within, text_utils::double_quote)},
                                       ", ");
 
         MetaVariable mv("meta_utils::MetaFunctionSignature", var_name, value, MetaVariable::InitStyle::Definition,
-                        mfs.name_space);
+                        mfs.name_space_this_is_within);
         mf_vars.push_back(mv);
     }
     return mf_vars;
@@ -1789,7 +1789,7 @@ create_list_all_available_functions(std::vector<MetaCodeCollection> &generated_m
         std::string ns_label = mcc.name_space.empty() ? "<global>" : mcc.name_space;
         msa.add("    std::cout << \"--- Functions in namespace: " + ns_label + " ---\" << std::endl;");
 
-        for (const auto &mc : mcc.classes) {
+        for (const auto &mc : mcc.get_classes()) {
             msa.add("    for (const auto &mfs : " + text_utils::pascal_to_snake_case(mc.name) +
                     ".all_meta_function_signatures) {");
             msa.add("        std::cout << mfs.to_string() << std::endl;");
@@ -1811,7 +1811,7 @@ MetaFunction create_interactive_invoker(std::vector<MetaCodeCollection> &generat
     msa.add("    size_t option_index = 1;");
 
     for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
-        for (const auto &mc : mcc.classes) {
+        for (const auto &mc : mcc.get_classes()) {
             std::string class_var = text_utils::pascal_to_snake_case(mc.name);
             msa.add("    for (const auto &mfs : " + class_var + ".all_meta_function_signatures) {");
             msa.add("        options_dict[std::to_string(option_index++)] = mfs;");
@@ -2012,18 +2012,18 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
         } else if (parser_name == cpp_parsing::class_def_parser->name) {
             auto mc = meta_utils::create_meta_class_from_source(source);
             if (mc.has_any_private_attributes()) {
-                global_logger.warn("we were going to construct a meta type for {}, but it had private attributes and "
-                                   "thus we don't know how to serialize it",
-                                   mc.name);
+                global_logger->warn("we were going to construct a meta type for {}, but it had private attributes and "
+                                    "thus we don't know how to serialize it",
+                                    mc.name);
                 continue;
             }
             custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
         } else if (parser_name == cpp_parsing::struct_def_parser->name) {
             auto mc = meta_utils::create_meta_struct_from_source(source);
             if (mc.has_any_private_attributes()) {
-                global_logger.warn("we were going to construct a meta type for {}, but it had private attributes and "
-                                   "thus we don't know how to serialize it",
-                                   mc.name);
+                global_logger->warn("we were going to construct a meta type for {}, but it had private attributes and "
+                                    "thus we don't know how to serialize it",
+                                    mc.name);
                 continue;
             }
             custom_mt = construct_class_metatype(mc, meta_utils::meta_types);
@@ -2042,7 +2042,11 @@ void register_custom_types_into_meta_types(const CustomTypeExtractionSettings &c
     }
 }
 
-// NOTE: this is becoming more general than that.
+// NOTE: this is becoming more general than that. it creates the meta program
+// TODO: when creating invokers, it must be that every type used in there is already in the concrete types, if its not
+// then things will fail. to fix this we should have a function which extracts out all the used types in a file, orders
+// them based on dependency (before parsing into meta types) and then parse into meta types and inject into the concrete
+// types varaible, then we don't manually have to do it by hand, it dynamically will get what it needs
 void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSettingsForHeaderSource> settings,
                                            const std::vector<MetaType> &all_types) {
 
@@ -2077,7 +2081,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         generated_mcc_for_each_header_source_pair.push_back(mfc_that_was_just_written);
 
         // WARN: assuming each one has at least one class
-        MetaClass meta_class_for_source_header_pair = mfc_that_was_just_written.classes.at(0);
+        MetaClass meta_class_for_source_header_pair = mfc_that_was_just_written.get_classes().at(0);
 
         for (const auto &meta_method : meta_class_for_source_header_pair.methods) {
             auto fun = meta_method.function;
@@ -2105,13 +2109,14 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     // NOTE: now we want to collect all the functions that we can call, which is given by the input collection
     std::vector<MetaVariable> all_meta_function_signatures_from_sub_string_invokers =
         collection_utils::join_all_vectors(collection_utils::map_vector(
-            generated_mcc_for_each_header_source_pair, [](MetaCodeCollection mfc) { return mfc.variables; }));
+            generated_mcc_for_each_header_source_pair, [](MetaCodeCollection mfc) { return mfc.get_variables(); }));
 
-    MetaCodeCollection meta_program_mcc;
+    MetaCodeCollection meta_program_meta_code_collection;
+    meta_program_meta_code_collection.header_file_code_ordering = MetaCodeCollection::HeaderFileCodeOrdering::AsAdded;
     meta_utils::MetaClass meta_class("MetaProgram");
 
-    meta_program_mcc.name = "meta_program";
-    meta_program_mcc.name_space = "meta_program";
+    meta_program_meta_code_collection.name = "meta_program";
+    // meta_program_mcc.name_space = "meta_program";
 
     // NOTE: Here's the logic that generates all the functions for every type
     struct Helper {
@@ -2123,7 +2128,8 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     for (const auto &mt : all_types) {
 
         for (const auto &include : mt.includes_required) {
-            meta_program_mcc.includes_required_for_declaration.push_back(include.str(output_header_dir));
+            meta_program_meta_code_collection.includes_required_for_declaration.push_back(
+                include.str(output_header_dir));
         }
 
         std::vector<Helper> func_sources = {
@@ -2143,14 +2149,17 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
 
     // top_level_invoker_mfc.variables.push_back(vector_of_meta_function_signature_var_names);
 
-    meta_program_mcc.includes_required_for_declaration = collection_utils::join_vectors(
-        meta_program_mcc.includes_required_for_declaration, header_paths_of_other_string_invokers);
-    meta_program_mcc.includes_required_for_declaration.push_back(optional_include);
-    meta_program_mcc.includes_required_for_declaration.push_back(create_local_include(
+    meta_program_meta_code_collection.includes_required_for_declaration = collection_utils::join_vectors(
+        meta_program_meta_code_collection.includes_required_for_declaration, header_paths_of_other_string_invokers);
+    meta_program_meta_code_collection.includes_required_for_declaration.push_back(optional_include);
+    meta_program_meta_code_collection.includes_required_for_declaration.push_back(create_local_include(
         fs_utils::get_relative_path(output_header_dir, "src/utility/meta_utils/meta_utils.hpp").string()));
-    meta_program_mcc.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
-    meta_program_mcc.includes_required_for_declaration.push_back(create_local_include(
+    meta_program_meta_code_collection.includes_required_for_definition.push_back("#include \"meta_program.hpp\"");
+    meta_program_meta_code_collection.includes_required_for_declaration.push_back(create_local_include(
         fs_utils::get_relative_path(output_header_dir, "src/utility/user_input/user_input.hpp").string()));
+    meta_program_meta_code_collection.includes_required_for_declaration.push_back(create_local_include(
+        fs_utils::get_relative_path(output_header_dir, "src/utility/lazy_construction/lazy_construction.hpp")
+            .string()));
 
     auto create_func_that_sequentially_tries_funcs_that_return_opt =
         [&](std::unordered_map<std::string, std::vector<ObjectFunction>> &return_type_to_invokers_that_return_it) {
@@ -2205,7 +2214,7 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
     for (const auto &mcc : generated_mcc_for_each_header_source_pair) {
         // NOTE: we use the assumption that each generated mccs has exactly one class right now, which is a bit
         // sketchy
-        MetaClass mc = mcc.classes.at(0);
+        MetaClass mc = mcc.get_classes().at(0);
 
         std::string var_name;
         if (not mcc.name_space.empty()) {
@@ -2220,9 +2229,15 @@ void generate_string_invokers_program_wide(std::vector<StringInvokerGenerationSe
         meta_class.add_attribute(ma);
     }
 
-    meta_program_mcc.classes.push_back(meta_class);
+    meta_program_meta_code_collection.add_class(meta_class);
 
-    meta_program_mcc.write_to_header_and_source(output_header_path, output_source_path);
+    MetaVariable global_meta_program("LazyConstruction<MetaProgram, std::vector<meta_utils::MetaType>>", "meta_program",
+                                     "LazyConstruction<MetaProgram, "
+                                     "std::vector<meta_utils::MetaType>>(meta_utils::meta_types.get_concrete_types())");
+
+    meta_program_meta_code_collection.add_variable(global_meta_program);
+
+    meta_program_meta_code_collection.write_to_header_and_source(output_header_path, output_source_path);
 }
 
 MetaCodeCollection
@@ -2294,7 +2309,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     auto meta_function_signature_variables =
         generate_meta_function_signature_variables(input_collection.declared_function_signatures_in_header_file);
     collection_utils::for_each_in_vector(meta_function_signature_variables, [&](MetaVariable &mv) {
-        mv.name_space = output_collection.name_space;
+        mv.name_space_this_is_within = output_collection.name_space;
         mv.init_style = MetaVariable::InitStyle::Brace;
     });
     collection_utils::for_each_in_vector(meta_function_signature_variables, [&](MetaVariable &mv) {
@@ -2354,7 +2369,7 @@ MetaCodeCollection generate_string_invokers_from_header_and_source(
     std::filesystem::path output_header = output_dir / (base_filename + ".hpp");
     std::filesystem::path output_source = output_dir / (base_filename + ".cpp");
 
-    output_collection.classes.push_back(meta_class);
+    output_collection.add_class(meta_class);
     output_collection.write_to_header_and_source(output_header.string(), output_source.string());
 
     return output_collection;

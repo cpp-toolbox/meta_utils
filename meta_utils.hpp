@@ -123,6 +123,8 @@ using MetaTemplateParameter = std::variant<unsigned int, MetaType>;
  *   memory sizes due to padding removal.
  *
  *   @note we can't use MetaFunctions in here because we get a cyclic dependency. Can we though?
+ *
+ *   @note this is serializable?
  */
 class MetaType {
   public:
@@ -542,7 +544,8 @@ inline MetaType BOOL = MetaType("bool", "[](const std::string &s) { return s == 
                                 "  return buf[0] != 0; }",
                                 R"(true|false|1|0)");
 
-inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](){}", "[](){ return \"\";}", "[](){}",
+inline meta_utils::MetaType meta_type_type("meta_utils::MetaType", "[](const meta_utils::MetaType &mt){}",
+                                           "[](){ return \"\";}", "[](){}",
                                            "[](const meta_utils::MetaType &v) { return sizeof(meta_utils::MetaType); }",
                                            "[](){}", "MetaType");
 
@@ -758,12 +761,12 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
 template <typename T>
 concept HasNameAndNamespace = requires(T a) {
     { a.name } -> std::same_as<std::string &>;
-    { a.name_space } -> std::same_as<std::string &>;
+    { a.name_space_this_is_within } -> std::same_as<std::string &>;
 };
 
 template <HasNameAndNamespace T> std::string get_fully_qualified_name(const T &obj) {
-    if (!obj.name_space.empty()) {
-        return obj.name_space + "::" + obj.name;
+    if (!obj.name_space_this_is_within.empty()) {
+        return obj.name_space_this_is_within + "::" + obj.name;
     }
     return obj.name;
 }
@@ -775,7 +778,7 @@ class MetaFunctionSignature {
     std::string param_list;
     std::vector<MetaParameter> parameters;
     std::string invocation_regex;
-    std::string name_space;
+    std::string name_space_this_is_within;
 
     bool operator==(const MetaFunctionSignature &other) const {
         return name == other.name && parameters == other.parameters;
@@ -783,7 +786,10 @@ class MetaFunctionSignature {
 
     MetaFunctionSignature() {};
 
-    MetaFunctionSignature(const std::string &input, const std::string &name_space) : name_space(name_space) {
+    MetaFunctionSignature(const std::string &input, const std::string &name_space)
+        : name_space_this_is_within(name_space) {
+        global_logger->info("meta function signature constructor: {}", input);
+
         auto cleaned_input = text_utils::join_multiline(input);
         std::string s = trim(cleaned_input);
 
@@ -958,6 +964,10 @@ class MetaFunctionSignature {
     }
 };
 
+/**
+ * @note it doesn't interally use a MetaType
+ *
+ */
 class MetaVariable {
   public:
     enum class InitStyle { Assignment, Definition, Brace };
@@ -965,13 +975,13 @@ class MetaVariable {
     MetaVariable(std::string type, std::string name, std::string value, InitStyle init_style = InitStyle::Assignment,
                  std::string name_space = "")
         : type(std::move(type)), name(std::move(name)), value(std::move(value)), init_style(std::move(init_style)),
-          name_space(std::move(name_space)) {}
+          name_space_this_is_within(std::move(name_space)) {}
 
     std::string type;
     std::string name;
     std::string value;
     InitStyle init_style = InitStyle::Assignment;
-    std::string name_space;
+    std::string name_space_this_is_within;
 
     std::string to_assignment() const { return type + " " + name + " = " + value + ";"; }
 
@@ -1242,7 +1252,7 @@ class MetaEnum {
 class MetaClass {
   public:
     std::string name;
-    std::string name_space;
+    std::string name_space_this_is_within;
     bool is_final = false;
 
     std::vector<MetaAttribute> attributes;
@@ -1250,7 +1260,7 @@ class MetaClass {
     std::vector<MetaMethod> methods;
 
     MetaClass(std::string name, std::string name_space = "", bool is_final = false)
-        : name(std::move(name)), name_space(std::move(name_space)), is_final(is_final) {}
+        : name(std::move(name)), name_space_this_is_within(std::move(name_space)), is_final(is_final) {}
 
     bool has_any_private_attributes() const {
         for (const auto &attr : attributes) {
@@ -1274,13 +1284,14 @@ class MetaClass {
         methods.push_back(method);
     }
 
-    std::string to_string() const {
+    std::string get_definition() const {
         std::ostringstream oss;
 
+        // NOTE: I decided not to do the namespace here because it should probably be at a file level I think
         // Namespace
-        if (!name_space.empty()) {
-            oss << "namespace " << name_space << " {\n";
-        }
+        // if (!name_space_this_is_within.empty()) {
+        //     oss << "namespace " << name_space_this_is_within << " {\n";
+        // }
 
         // Class header
         oss << "class " << name;
@@ -1303,9 +1314,9 @@ class MetaClass {
 
         oss << "};\n";
 
-        if (!name_space.empty()) {
-            oss << "} // namespace " << name_space << "\n";
-        }
+        // if (!name_space_this_is_within.empty()) {
+        //     oss << "} // namespace " << name_space_this_is_within << "\n";
+        // }
 
         return oss.str();
     }
@@ -1393,20 +1404,63 @@ class MetaCodeCollection {
     std::string name; // used for ifndef guards
 
     // NOTE: not sure if we need both of these or just one
-    std::vector<MetaFunction> functions;
     std::vector<MetaFunctionSignature> declared_function_signatures_in_header_file;
 
+  public:
+    const std::vector<MetaFunction> &get_functions() const { return functions; }
+    const std::vector<MetaVariable> &get_variables() const { return variables; }
+    const std::vector<MetaClass> &get_classes() const { return classes; }
+
+  private:
+    std::vector<MetaFunction> functions;
     std::vector<MetaVariable> variables;
     std::vector<MetaClass> classes;
+
+  public:
     std::vector<std::string> includes_required_for_declaration;
     std::vector<std::string> includes_required_for_definition;
     std::string name_space;
+
+    // startfold code ordering in the file
+    enum class HeaderFileCodeOrdering {
+        /// the order in which they are added to the mcc is the order in which they will be found in the generated
+        /// header file
+        AsAdded,
+        /// the order will be grouped by function/classes/variables.
+        Grouped,
+    };
+
+    HeaderFileCodeOrdering header_file_code_ordering = MetaCodeCollection::HeaderFileCodeOrdering::Grouped;
+
+    enum class CppEntityType { Variable, Class, Function };
+
+    struct CppEntityAddition {
+        CppEntityType cpp_entity_type;
+        size_t index; // index into the corresponding vector
+    };
+
+    std::vector<CppEntityAddition> cpp_entity_insertion_order;
+
+    // endfold
 
     MetaCodeCollection() = default;
 
     void add_function(MetaFunction mf) {
         mf.name_space = name_space;
         functions.push_back(std::move(mf));
+        cpp_entity_insertion_order.push_back({MetaCodeCollection::CppEntityType::Function, functions.size() - 1});
+    }
+
+    void add_class(MetaClass mc) {
+        mc.name_space_this_is_within = name_space;
+        classes.push_back(std::move(mc));
+        cpp_entity_insertion_order.push_back({MetaCodeCollection::CppEntityType::Class, classes.size() - 1});
+    }
+
+    void add_variable(MetaVariable mv) {
+        mv.name_space_this_is_within = name_space;
+        variables.push_back(std::move(mv));
+        cpp_entity_insertion_order.push_back({MetaCodeCollection::CppEntityType::Variable, variables.size() - 1});
     }
 
     MetaCodeCollection(const std::string &header_file_path, const std::string &cpp_file_path,
@@ -1434,6 +1488,10 @@ class MetaCodeCollection {
         fs_utils::create_file_with_content_if_different(cpp_file_path, cpp_str);
     }
 
+    /**
+     * @generates a header file based on this meta code collection
+     *
+     */
     std::string generate_header_file_string() {
         std::ostringstream oss;
 
@@ -1455,37 +1513,77 @@ class MetaCodeCollection {
             oss << "namespace " << name_space << " {\n\n";
         }
 
-        for (const auto &var : variables) {
-            oss << "extern " << var.type << " " << var.name << ";\n";
-        }
+        if (header_file_code_ordering == HeaderFileCodeOrdering::Grouped) {
+            // TODO: was about to turn the following into a function that takes oss by reference, then check chatgpt for
+            // the other one
 
-        oss << "\n";
-
-        for (const auto &cls : classes) {
-            oss << cls.to_string() << "\n\n";
-        }
-
-        // NOTE: I don't think we need this loop?
-        for (const auto &func : functions) {
-            oss << func.signature.return_type << " " << func.signature.name << "(";
-            for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
-                const auto &param = func.signature.parameters[i];
-                oss << param.type.get_type_name() << " " << param.name;
-                if (i < func.signature.parameters.size() - 1)
-                    oss << ", ";
+            for (const auto &var : variables) {
+                // NOTE: you can't define vars in the header, so we use extern
+                oss << "extern " << var.type << " " << var.name << ";\n";
             }
-            oss << ");\n";
-        }
 
-        for (const auto &sig : declared_function_signatures_in_header_file) {
-            oss << sig.return_type << " " << sig.name << "(";
-            for (size_t i = 0; i < sig.parameters.size(); ++i) {
-                const auto &param = sig.parameters[i];
-                oss << param.type.get_type_name() << " " << param.name;
-                if (i < sig.parameters.size() - 1)
-                    oss << ", ";
+            oss << "\n";
+
+            for (const auto &cls : classes) {
+                oss << cls.get_definition() << "\n\n";
             }
-            oss << ");\n";
+
+            // NOTE: I don't think we need this loop?
+            for (const auto &func : functions) {
+                oss << func.signature.return_type << " " << func.signature.name << "(";
+                for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
+                    const auto &param = func.signature.parameters[i];
+                    oss << param.type.get_type_name() << " " << param.name;
+                    if (i < func.signature.parameters.size() - 1)
+                        oss << ", ";
+                }
+                oss << ");\n";
+            }
+
+            // NOTE: either this or the above is unncessary...
+            for (const auto &sig : declared_function_signatures_in_header_file) {
+                oss << sig.return_type << " " << sig.name << "(";
+                for (size_t i = 0; i < sig.parameters.size(); ++i) {
+                    const auto &param = sig.parameters[i];
+                    oss << param.type.get_type_name() << " " << param.name;
+                    if (i < sig.parameters.size() - 1)
+                        oss << ", ";
+                }
+                oss << ");\n";
+            }
+        } else if (header_file_code_ordering == HeaderFileCodeOrdering::AsAdded) {
+            for (auto &item : cpp_entity_insertion_order) {
+                switch (item.cpp_entity_type) {
+
+                case CppEntityType::Variable: {
+                    const auto &var = variables[item.index];
+                    oss << "extern " << var.type << " " << var.name << ";\n";
+                    break;
+                }
+
+                case CppEntityType::Class: {
+                    const MetaClass &mc = classes[item.index];
+                    oss << mc.get_definition() << "\n\n";
+                    break;
+                }
+
+                case CppEntityType::Function: {
+                    MetaFunction &func = functions[item.index];
+                    oss << func.signature.return_type << " " << func.signature.name << "(";
+                    for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
+                        const auto &param = func.signature.parameters[i];
+                        oss << param.type.get_type_name() << " " << param.name;
+                        if (i < func.signature.parameters.size() - 1)
+                            oss << ", ";
+                    }
+                    oss << ");\n";
+                    break;
+                }
+
+                default:
+                    break;
+                }
+            }
         }
 
         if (!name_space.empty()) {
