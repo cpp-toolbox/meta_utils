@@ -13,8 +13,13 @@ There should be some deliniation between the logic for the meta program, and thi
 - Add support for templated types function generation, on way to do it is to maintain the current logic, and then improve it by adding "Converters" on top of it. Ie right now there there is no function exsting for std::vector<int> because we'd have to do it for every type subitition which is really stupid, this allows us to hook into the c++ template system. Also this is blocking me from being able to reduce all the copy pasted code in the conversions, once this is figured out then I can do that properly. See: https://chatgpt.com/share/69277554-cc24-8007-ac9f-929b801f8132
 - Add support for recursive custom types, eg a class that contains a vector of itself.
 - Add ability to extract classes or structs into an external file (eg get this struct and give it its own file)
+- Add ability to take the union or intersection of classes.
+- Add ability to autogenerate constructors.
+- Automatically build constructors and getters.
+- Add ability to extract classes or structs into an external file
 - Add ability to extract code into a function
 - Add ability to extract implementation out of header file into a source file
+- Need a solution to the problem where you change your types and it invalidates the current meta program, but there is also another different change that needs to be compiled before that meta program can be regenerated putting you at a deadlock, a potential solution might be one where you can empty all the definitions so any invalid usages of those types are removed, but then what about type name replacemenets? A temporary solution is to comment out everything where possible
 - Add ability to convert between equivalent types, if two types are equivalent, then you can show how to map between the two, the reason for automation is that if you enter a new code base you don't have to create conversion between different equivalent types, that glue would already be built, not exactly sure about the specifics of this yet.
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
 - Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
