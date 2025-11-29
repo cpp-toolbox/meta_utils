@@ -19,6 +19,7 @@ There should be some deliniation between the logic for the meta program, and thi
 - Add ability to extract classes or structs into an external file
 - Add ability to extract code into a function
 - Add ability to extract implementation out of header file into a source file
+- Add ability to extract classes to python classes if wanted
 - Need a solution to the problem where you change your types and it invalidates the current meta program, but there is also another different change that needs to be compiled before that meta program can be regenerated putting you at a deadlock, a potential solution might be one where you can empty all the definitions so any invalid usages of those types are removed, but then what about type name replacemenets? A temporary solution is to comment out everything where possible
 - Add ability to convert between equivalent types, if two types are equivalent, then you can show how to map between the two, the reason for automation is that if you enter a new code base you don't have to create conversion between different equivalent types, that glue would already be built, not exactly sure about the specifics of this yet.
 - class decorators: https://chatgpt.com/share/6906f0e6-a12c-8007-b366-b496531a8b71
