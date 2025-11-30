@@ -731,20 +731,51 @@ inline std::unordered_map<std::string, MetaType> create_type_name_to_meta_type_m
 
 std::optional<MetaType> parse_meta_type_from_string(const std::string &type_str);
 
+enum class MetaQualifier {
+    CONST,
+    VOLATILE,
+};
+
 std::string clean_type_string(const std::string &raw_type);
+std::vector<MetaQualifier> extract_meta_qualifiers(const std::string &raw_type);
 
 /**
  * @todo I think internally this should just use a meta variable.
  */
 class MetaParameter {
   public:
-    std::string name;
+    std::vector<MetaQualifier> qualifiers;
     MetaType type;
+    std::string name;
 
     MetaParameter() = default;
     MetaParameter(const std::string &input);
 
     bool operator==(const MetaParameter &other) const { return name == other.name && type == other.type; }
+
+    std::string to_code() const {
+        std::ostringstream oss;
+
+        // Print qualifiers
+        for (MetaQualifier q : qualifiers) {
+            switch (q) {
+            case MetaQualifier::CONST:
+                oss << "const ";
+                break;
+            case MetaQualifier::VOLATILE:
+                oss << "volatile ";
+                break;
+            }
+        }
+
+        // Type name
+        oss << type.get_type_name();
+
+        // Parameter name
+        oss << " " << name;
+
+        return oss.str();
+    }
 
     std::string to_string() const {
         std::ostringstream oss;
@@ -869,7 +900,7 @@ class MetaFunctionSignature {
         sa.add(return_type, " ", name, "(");
         for (size_t i = 0; i < parameters.size(); ++i) {
             const auto &param = parameters[i];
-            sa.add(param.type.get_type_name(), " ", param.name);
+            sa.add(param.to_code());
             if (i < parameters.size() - 1)
                 sa.add(", ");
         }
@@ -1078,7 +1109,7 @@ class MetaFunction {
 
         for (size_t i = 0; i < signature.parameters.size(); ++i) {
             const auto &param = signature.parameters[i];
-            oss << param.type.get_type_name() << " " << param.name;
+            oss << param.to_code();
             if (i + 1 < signature.parameters.size()) {
                 oss << ", ";
             }
@@ -1100,7 +1131,7 @@ class MetaFunction {
 
         for (size_t i = 0; i < signature.parameters.size(); ++i) {
             const auto &param = signature.parameters[i];
-            oss << param.type.get_type_name() << " " << param.name;
+            oss << param.to_code();
             if (i + 1 < signature.parameters.size()) {
                 oss << ", ";
             }
@@ -1185,7 +1216,7 @@ class MetaMethod {
         oss << function.signature.name << "(";
         for (size_t i = 0; i < function.signature.parameters.size(); ++i) {
             const auto &param = function.signature.parameters[i];
-            oss << param.type.get_type_name() << " " << param.name;
+            oss << param.to_code();
             if (i + 1 < function.signature.parameters.size())
                 oss << ", ";
         }
@@ -1228,7 +1259,7 @@ class MetaConstructor {
         oss << pad << class_name << "(";
         for (size_t i = 0; i < parameters.size(); ++i) {
             const auto &param = parameters[i];
-            oss << param.type.get_type_name() << " " << param.name;
+            oss << param.to_code();
             if (i + 1 < parameters.size())
                 oss << ", ";
         }
@@ -1382,7 +1413,7 @@ class MetaClass {
 
                 for (size_t i = 0; i < method.function.signature.parameters.size(); ++i) {
                     const auto &param = method.function.signature.parameters[i];
-                    oss << param.type.get_type_name() << " " << param.name;
+                    oss << param.to_code();
                     if (i + 1 < method.function.signature.parameters.size()) {
                         oss << ", ";
                     }
@@ -1541,7 +1572,7 @@ class MetaCodeCollection {
                 oss << func.signature.return_type << " " << func.signature.name << "(";
                 for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
                     const auto &param = func.signature.parameters[i];
-                    oss << param.type.get_type_name() << " " << param.name;
+                    oss << param.to_code();
                     if (i < func.signature.parameters.size() - 1)
                         oss << ", ";
                 }
@@ -1553,7 +1584,7 @@ class MetaCodeCollection {
                 oss << sig.return_type << " " << sig.name << "(";
                 for (size_t i = 0; i < sig.parameters.size(); ++i) {
                     const auto &param = sig.parameters[i];
-                    oss << param.type.get_type_name() << " " << param.name;
+                    oss << param.to_code();
                     if (i < sig.parameters.size() - 1)
                         oss << ", ";
                 }
@@ -1580,7 +1611,7 @@ class MetaCodeCollection {
                     oss << func.signature.return_type << " " << func.signature.name << "(";
                     for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
                         const auto &param = func.signature.parameters[i];
-                        oss << param.type.get_type_name() << " " << param.name;
+                        oss << param.to_code();
                         if (i < func.signature.parameters.size() - 1)
                             oss << ", ";
                     }
@@ -1624,7 +1655,7 @@ class MetaCodeCollection {
             oss << func.signature.return_type << " " << func.signature.name << "(";
             for (size_t i = 0; i < func.signature.parameters.size(); ++i) {
                 const auto &param = func.signature.parameters[i];
-                oss << param.type.get_type_name() << " " << param.name;
+                oss << param.to_code();
                 if (i < func.signature.parameters.size() - 1)
                     oss << ", ";
             }
