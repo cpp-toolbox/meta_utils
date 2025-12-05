@@ -8,6 +8,7 @@ This is a system which creates a "meta program", a meta program is a reflection 
 There should be some deliniation between the logic for the meta program, and this, and this is just tools to operate on source code providing you to parse it into a meta format? idk yet this needs more time in the oven before I truly know what it is
 
 ## TODO
+- I want to string for classes to return valid json so that parsing and visualizing that is way easier.
 - Add string invocation for object methods, the function takes in the target object and a string and calls the correct method
 - To string functions should have a mode where it can format with newlines, from string will remove all whitespace before parsing back out.
 - Add support for templated types function generation, on way to do it is to maintain the current logic, and then improve it by adding "Converters" on top of it. Ie right now there there is no function exsting for std::vector<int> because we'd have to do it for every type subitition which is really stupid, this allows us to hook into the c++ template system. Also this is blocking me from being able to reduce all the copy pasted code in the conversions, once this is figured out then I can do that properly. See: https://chatgpt.com/share/69277554-cc24-8007-ac9f-929b801f8132
