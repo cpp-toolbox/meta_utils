@@ -1468,10 +1468,10 @@ std::vector<MetaQualifier> extract_meta_qualifiers(const std::string &raw_type) 
     static const std::regex volatile_rx(R"(\bvolatile\b)");
 
     if (std::regex_search(raw_type, const_rx)) {
-        qualifiers.push_back(MetaQualifier::CONST);
+        qualifiers.push_back(MetaQualifier::CONST_);
     }
     if (std::regex_search(raw_type, volatile_rx)) {
-        qualifiers.push_back(MetaQualifier::VOLATILE);
+        qualifiers.push_back(MetaQualifier::VOLATILE_);
     }
 
     return qualifiers;
