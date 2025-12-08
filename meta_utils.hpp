@@ -732,8 +732,9 @@ inline std::unordered_map<std::string, MetaType> create_type_name_to_meta_type_m
 std::optional<MetaType> parse_meta_type_from_string(const std::string &type_str);
 
 enum class MetaQualifier {
-    CONST,
-    VOLATILE,
+    // using underscore postfix so compiler doesn't freak
+    CONST_,
+    VOLATILE_,
 };
 
 std::string clean_type_string(const std::string &raw_type);
@@ -759,10 +760,10 @@ class MetaParameter {
         // Print qualifiers
         for (MetaQualifier q : qualifiers) {
             switch (q) {
-            case MetaQualifier::CONST:
+            case MetaQualifier::CONST_:
                 oss << "const ";
                 break;
-            case MetaQualifier::VOLATILE:
+            case MetaQualifier::VOLATILE_:
                 oss << "volatile ";
                 break;
             }
