@@ -802,8 +802,9 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
 
 template <typename T>
 concept HasNameAndNamespace = requires(T a) {
-    { a.name } -> std::same_as<std::string &>;
-    { a.name_space_this_is_within } -> std::same_as<std::string &>;
+    // can't use the same_as concept on apple-clang13
+    { a.name };
+    { a.name_space_this_is_within };
 };
 
 template <HasNameAndNamespace T> std::string get_fully_qualified_name(const T &obj) {
