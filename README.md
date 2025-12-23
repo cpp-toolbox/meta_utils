@@ -27,6 +27,7 @@ There should be some deliniation between the logic for the meta program, and thi
 - Add ability to run as a static ECS system where components can be added just like inheritance etc... need to think about that more.
 - Add ability to autogenerate constructors.
 - Add ability to take the union or intersection of classes.
+- Given a header and source file the ability to make the ordering of functions in the soruce file the same as the header file.
 
 ## Gotchas
 - Some types are not able to be reconstructed, one example of this the `std::regex` object, the problem with it is that you construct it by passing a pattern, and so you would expect `from_string` to take in the pattern and construct the regex, which makes sense and is possible, but the `to_string` can't be defined in a way that allows to say that `r = from_string(to_string(r))` as we don't have access to the pattern, thus we cannot define these functions for this type, keep this in mind.
