@@ -1352,11 +1352,11 @@ std::string generate_regex_to_match_valid_invocation_of_func(const std::string &
 
         parsed_regular = true;
     } catch (const std::invalid_argument &) {
-        // Fallthrough → try constructor parsing
+        // Fallthrough try constructor parsing
     }
 
     if (!parsed_regular) {
-        // --- Constructor case (unchanged, still regex) ---
+        // --- constructor case (unchanged, still regex) ---
         std::smatch match;
         std::regex re(regex_utils::constructor_signature_re);
         if (!std::regex_match(s, match, re)) {
